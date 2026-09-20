@@ -1,22 +1,24 @@
+
+# Python
 # Training data and weights never enter git
-data/
-datasets/
-checkpoints/
-runs/
+*.ckpt
+*.egg-info/
+*.inp
+*.msh
 *.pt
 *.pth
 *.safetensors
-*.ckpt
-*.vtk
 *.step
 *.stp
-*.msh
-*.inp
-
-# Python
+*.vtk
+.DS_Store
+.pytest_cache/
+.venv*/
 .venv/
 __pycache__/
-*.egg-info/
-.pytest_cache/
-dist/
 build/
+checkpoints/
+data/
+datasets/
+dist/
+runs/
