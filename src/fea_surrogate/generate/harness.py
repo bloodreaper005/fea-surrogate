@@ -123,8 +123,16 @@ def draw(family: Family, rng: np.random.Generator) -> MeshedSample:
         gmsh.model.occ.synchronize()
         tagging: Tagging = family.tag(params)
 
-        box = gmsh.model.getBoundingBox(-1, -1)
-        extent = np.array(box[3:]) - np.array(box[:3])
+        # Measure the solid, not the model: boolean construction leaves stray
+        # lower-dimensional entities behind, and a cut pulley reads 16% wider
+        # than it is if those are included.
+        volumes = gmsh.model.getEntities(3)
+        if not volumes:
+            raise ValueError(f"family {family.name} produced no solid")
+        corners = np.array(
+            [gmsh.model.getBoundingBox(3, tag) for _, tag in volumes]
+        )
+        extent = corners[:, 3:].max(axis=0) - corners[:, :3].min(axis=0)
         size = mesh_size_for(extent)
         gmsh.option.setNumber("Mesh.MeshSizeMax", size)
         gmsh.option.setNumber("Mesh.MeshSizeMin", size / 4.0)

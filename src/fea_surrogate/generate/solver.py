@@ -180,6 +180,15 @@ def solve(sample: MeshedSample) -> SolvedSample:
     free = np.ones(3 * n, dtype=bool)
     free[np.stack([3 * constrained, 3 * constrained + 1,
                    3 * constrained + 2], axis=1).reshape(-1)] = False
+
+    # gmsh returns nodes that belong to no tetrahedron — 153 of 1379 on a
+    # swept helix. They carry no stiffness, so leaving their degrees of freedom
+    # in the system makes it exactly singular and the solve returns NaN rather
+    # than failing. They are in no element, so excluding them changes no stress.
+    referenced = np.zeros(n, dtype=bool)
+    referenced[np.unique(tets)] = True
+    free &= np.repeat(referenced, 3)
+
     if not free.any():
         raise SolveError("every degree of freedom is constrained")
 

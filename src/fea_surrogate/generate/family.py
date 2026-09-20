@@ -106,6 +106,22 @@ def extreme_face(axis: int, *, lowest: bool = True) -> tuple[int, ...]:
     return (target[0],)
 
 
+def face_radial_extent() -> dict[int, float]:
+    """Radial size of each face, from its own bounding box.
+
+    Needed because a full cylindrical surface has its centre of mass on the
+    axis: a bore and a rim both report a centroid radius of zero, so centroids
+    cannot tell them apart. The bounding box can.
+    """
+    import gmsh
+
+    extents: dict[int, float] = {}
+    for _, tag in gmsh.model.getEntities(2):
+        box = gmsh.model.getBoundingBox(2, tag)
+        extents[tag] = max(abs(box[0]), abs(box[1]), abs(box[3]), abs(box[4]))
+    return extents
+
+
 def sample_poisson(rng: np.random.Generator) -> float:
     return float(rng.uniform(*POISSON_RANGE))
 
@@ -131,6 +147,7 @@ __all__ = [
     "Tagging",
     "extreme_face",
     "face_centroids",
+    "face_radial_extent",
     "faces_where",
     "log_uniform",
     "sample_force",
