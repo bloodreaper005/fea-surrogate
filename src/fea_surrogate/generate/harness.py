@@ -16,7 +16,26 @@ import numpy as np
 from .family import FEATURE_COLUMNS, Family, Sample, Tagging, sample_force, sample_poisson
 
 
-MESH_SIZE_FRACTION = 0.06   # of the bounding-box diagonal
+# Elements through the thinnest dimension. A fraction of the diagonal is the
+# wrong rule for a slender part: a 200x40x10 beam meshed at 6% of its diagonal
+# gets one element through the thickness and reports a third of its true
+# bending stress. Bounds keep the node count finite at extreme aspect ratios.
+ELEMENTS_THROUGH_THICKNESS = 4
+MESH_SIZE_MIN_FRACTION = 1 / 80   # of the diagonal
+MESH_SIZE_MAX_FRACTION = 1 / 8
+
+
+def mesh_size_for(extent: np.ndarray) -> float:
+    """Characteristic element size for a part with this bounding-box extent."""
+    diagonal = float(np.linalg.norm(extent))
+    thinnest = float(np.min(extent[extent > 0.0])) if np.any(extent > 0.0) else diagonal
+    return float(
+        np.clip(
+            thinnest / ELEMENTS_THROUGH_THICKNESS,
+            diagonal * MESH_SIZE_MIN_FRACTION,
+            diagonal * MESH_SIZE_MAX_FRACTION,
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -106,9 +125,9 @@ def draw(family: Family, rng: np.random.Generator) -> MeshedSample:
 
         box = gmsh.model.getBoundingBox(-1, -1)
         extent = np.array(box[3:]) - np.array(box[:3])
-        diagonal = float(np.linalg.norm(extent))
-        gmsh.option.setNumber("Mesh.MeshSizeMax", diagonal * MESH_SIZE_FRACTION)
-        gmsh.option.setNumber("Mesh.MeshSizeMin", diagonal * MESH_SIZE_FRACTION / 4.0)
+        size = mesh_size_for(extent)
+        gmsh.option.setNumber("Mesh.MeshSizeMax", size)
+        gmsh.option.setNumber("Mesh.MeshSizeMin", size / 4.0)
         gmsh.model.mesh.generate(3)
 
         tags, coords, _ = gmsh.model.mesh.getNodes()
@@ -176,4 +195,4 @@ def draw(family: Family, rng: np.random.Generator) -> MeshedSample:
     )
 
 
-__all__ = ["MESH_SIZE_FRACTION", "MeshedSample", "draw"]
+__all__ = ["MeshedSample", "draw", "mesh_size_for"]

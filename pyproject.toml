@@ -16,6 +16,7 @@ inference = [
     "torch>=2.2",
     "torch-geometric>=2.5",
     "gmsh>=4.12",
+    "scipy>=1.11",
 ]
 
 [dependency-groups]
