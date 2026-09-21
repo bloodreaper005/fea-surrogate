@@ -88,7 +88,12 @@ def test_the_named_family_gets_a_tighter_band_than_an_unnamed_one(
     parts, surrogate
 ) -> None:
     named = screen_step(surrogate, parts["step"], force_n=5000.0, family="bracket")
-    unnamed = screen_step(surrogate, parts["step"], force_n=5000.0)
+    # No family means no preset, so the load case has to be stated explicitly.
+    unnamed = screen_step(
+        surrogate, parts["step"], force_n=5000.0,
+        fixed={"axis": "x", "at": "min"}, loaded={"axis": "x", "at": "max"},
+        load_direction=[0.0, 0.0, -1.0],
+    )
 
     def ratio(d):
         p = d["predictions"][0]
@@ -119,7 +124,32 @@ def test_v2_does_not_claim_the_load_was_snapped(parts, surrogate) -> None:
 
 def test_a_non_positive_load_is_refused(parts, surrogate) -> None:
     with pytest.raises(Exception, match="positive"):
-        screen_step(surrogate, parts["step"], force_n=0.0)
+        screen_step(surrogate, parts["step"], force_n=0.0, family="bracket")
+
+
+def test_screening_refuses_to_guess_the_load_case(parts, surrogate) -> None:
+    """Guessing screens a load case the caller did not ask for.
+
+    The heuristic it replaces fixed the lowest face and loaded the highest,
+    which on an L-bracket presses down on the leg instead of bending the arm.
+    """
+    from fea_surrogate.selectors import SelectorError
+
+    with pytest.raises(SelectorError, match="no boundary conditions"):
+        screen_step(surrogate, parts["step"], force_n=5000.0)
+
+
+def test_explicit_selectors_win_over_a_family_preset(parts, surrogate) -> None:
+    preset = screen_step(surrogate, parts["step"], force_n=5000.0, family="bracket")
+    override = screen_step(
+        surrogate, parts["step"], force_n=5000.0, family="bracket",
+        fixed={"axis": "z", "at": "min"}, loaded={"axis": "z", "at": "max"},
+    )
+
+    assert any("family preset" in a for a in preset["assumptions"])
+    assert any("caller-supplied" in a for a in override["assumptions"])
+    assert (preset["predictions"][0]["upper"]
+            != override["predictions"][0]["upper"])
 
 
 def test_provenance_never_reaches_the_domain_gate(parts, surrogate) -> None:

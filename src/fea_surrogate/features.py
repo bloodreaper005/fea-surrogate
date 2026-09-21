@@ -91,7 +91,16 @@ def mesh_step(path: str | Path, *, version: str = DEFAULT_VERSION) -> ScaledMesh
             size = MESH_SIZE_MAX / scale
         else:
             scale = 1.0
+            # Same rule the sweep uses: the bounding box cannot see a thin
+            # internal feature, and 2V/A can.
+            volume = sum(gmsh.model.occ.getMass(3, tag) for _, tag in volumes)
+            area = sum(
+                gmsh.model.occ.getMass(2, tag)
+                for _, tag in gmsh.model.getEntities(2)
+            )
             thinnest = float(np.min(extent[extent > 0.0]))
+            if area > 0.0:
+                thinnest = min(thinnest, 2.0 * volume / area)
             size = float(np.clip(thinnest / 4.0, diagonal / 80.0, diagonal / 8.0))
 
         gmsh.option.setNumber("Mesh.MeshSizeMax", size)
@@ -181,10 +190,11 @@ def build_graph(
     n = pos.shape[0]
 
     if fixed_vertices is None:
-        z = pos[:, 2]
-        fixed = z <= (z.min() + 0.02 * (z.max() - z.min() + 1e-9))
-    else:
-        fixed = torch.from_numpy(np.asarray(fixed_vertices, dtype=bool))
+        raise ValueError(
+            "build_graph needs a fixed-vertex mask; guessing one screens a "
+            "load case the caller did not ask for"
+        )
+    fixed = torch.from_numpy(np.asarray(fixed_vertices, dtype=bool))
 
     if version == SFEM_V1:
         data.sdf = _sdf_fixed_box(data.pos)
@@ -197,10 +207,8 @@ def build_graph(
     else:
         data.sdf = _sdf_own_box(data.pos)
         if loaded_vertices is None:
-            z = pos[:, 2]
-            loaded = z >= (z.max() - 0.02 * (z.max() - z.min() + 1e-9))
-        else:
-            loaded = torch.from_numpy(np.asarray(loaded_vertices, dtype=bool))
+            raise ValueError("build_graph needs a loaded-vertex mask")
+        loaded = torch.from_numpy(np.asarray(loaded_vertices, dtype=bool))
         direction = np.array(load_direction, dtype=float)
         direction = direction / (np.linalg.norm(direction) or 1.0)
         data.x = torch.cat(

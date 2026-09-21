@@ -24,6 +24,7 @@ PROVENANCE_KEYS = frozenset({
     "note",
 })
 from .model import load_model
+from .selectors import resolve, select
 from .screening import (
     Calibration,
     Prediction,
@@ -106,8 +107,10 @@ def screen_step(
     *,
     force_n: float,
     family: str | None = None,
+    fixed: dict[str, Any] | None = None,
+    loaded: dict[str, Any] | None = None,
+    load_direction: list[float] | None = None,
     characteristic_length_mm: float | None = None,
-    fixed_vertices: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Screen one STEP file and return a document the consumer will accept.
 
@@ -116,19 +119,29 @@ def screen_step(
     bounding-box diagonal. Pass `characteristic_length_mm` when the STEP file's
     units are not millimetres.
 
-    `family` selects the calibration band. Naming it earns the band that family
-    measured; leaving it out earns the widest band any family measured, because
-    a part whose group is unknown has not been shown to be covered at the
-    stated rate by anything narrower.
+    `family` selects the calibration band, and supplies the boundary conditions
+    that family was trained under when `fixed` and `loaded` are not given.
+    Naming it earns the band that family measured; leaving it out earns the
+    widest band any family measured, because a part whose group is unknown has
+    not been shown to be covered at the stated rate by anything narrower.
+
+    `fixed` and `loaded` are geometric selectors, for example
+    `{"axis": "x", "at": "min"}`. They win over a family preset, because a
+    caller who describes the load case means it.
     """
     if force_n <= 0 or not np.isfinite(force_n):
         raise ScreeningContractError("force_n must be a positive, finite number")
 
+    fixed_spec, loaded_spec, direction, origin = resolve(
+        family, fixed, loaded, load_direction
+    )
     mesh = mesh_step(step_path, version=surrogate.version)
     data = build_graph(
         mesh,
         version=surrogate.version,
-        fixed_vertices=fixed_vertices,
+        fixed_vertices=select(fixed_spec, mesh.vertices, "fixed"),
+        loaded_vertices=select(loaded_spec, mesh.vertices, "loaded"),
+        load_direction=tuple(direction),
         force_n=force_n,
     )
     tau = surrogate.peak_tau(data)
@@ -170,6 +183,10 @@ def screen_step(
     # An interval qualified by the wrong group is not qualified.
     domain["calibration_family"] = family or "unknown_widest_band"
     domain["feature_version"] = surrogate.version
+    # `origin` is a description of the load case, not a bound a query can
+    # satisfy, so it travels in the assumptions. Putting it here would make
+    # every query fail as `missing` — the defect this very function fixed for
+    # provenance one commit ago.
 
     assumptions = [
         "linear elastic, small displacement",
@@ -191,6 +208,8 @@ def screen_step(
             if family
             else "no family named, so the widest measured band was used"
         ),
+        f"held at {fixed_spec}, loaded at {loaded_spec} "
+        f"along {direction}, from {origin}",
         *(f"{key}: {value}" for key, value in sorted(provenance.items())),
     ]
 

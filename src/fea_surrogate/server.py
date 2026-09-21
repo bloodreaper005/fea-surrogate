@@ -112,6 +112,9 @@ def create_mcp(*, surrogate: Surrogate | None = None) -> FastMCP:
         step_path: str,
         force_n: float,
         family: str = "",
+        fixed_json: str = "",
+        loaded_json: str = "",
+        load_direction_json: str = "",
         characteristic_length_mm: float = 0.0,
     ) -> str:
         """Screen a STEP file and return one SurrogateScreening/v1 document.
@@ -120,10 +123,16 @@ def create_mcp(*, surrogate: Surrogate | None = None) -> FastMCP:
         confirm a design. Pass `characteristic_length_mm` when the file's units
         are not millimetres; 0 uses the bounding-box diagonal as found.
 
-        `family` selects the calibration band. Naming it earns the band that
+        `family` selects the calibration band, and supplies the boundary
+        conditions that family was trained under. Naming it earns the band that
         family measured; leaving it empty earns the widest band any family
         measured, because a part whose group is unknown has not been shown to
         be covered at the stated rate by anything narrower.
+
+        `fixed_json` and `loaded_json` are geometric selectors and win over a
+        family preset, for example {"axis": "x", "at": "min"},
+        {"axis": "z", "between": [0.1, 0.9]} or {"radial": "inner"}.
+        `load_direction_json` is a vector, for example [0, 0, -1].
         """
         return _tool_call(
             lambda: screen_step(
@@ -131,6 +140,11 @@ def create_mcp(*, surrogate: Surrogate | None = None) -> FastMCP:
                 step_path,
                 force_n=force_n,
                 family=family or None,
+                fixed=json.loads(fixed_json) if fixed_json else None,
+                loaded=json.loads(loaded_json) if loaded_json else None,
+                load_direction=(
+                    json.loads(load_direction_json) if load_direction_json else None
+                ),
                 characteristic_length_mm=(
                     characteristic_length_mm if characteristic_length_mm > 0 else None
                 ),

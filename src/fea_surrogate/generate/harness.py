@@ -25,10 +25,29 @@ MESH_SIZE_MIN_FRACTION = 1 / 80   # of the diagonal
 MESH_SIZE_MAX_FRACTION = 1 / 8
 
 
-def mesh_size_for(extent: np.ndarray) -> float:
-    """Characteristic element size for a part with this bounding-box extent."""
+def mesh_size_for(
+    extent: np.ndarray,
+    volume: float | None = None,
+    area: float | None = None,
+) -> float:
+    """Characteristic element size for a part with this extent.
+
+    The bounding box alone is not enough. An L-bracket's box is 180x60x90 and
+    its plate is 12 mm thick, so sizing from the box gave h = 15 and less than
+    one element through the plate; measured across the families, brackets got
+    0.3 to 1.2 elements through their thin feature and welded T joints 0.5 to
+    0.7. Those are the two families whose thin feature is internal, and welded_t
+    is by a wide margin the hardest family to predict.
+
+    `2 * volume / area` recovers a thin dimension the box cannot see, because a
+    plate of thickness t has V/A close to t/2. It is used alongside the box
+    minimum, never instead of it, and the smaller of the two wins: the rule may
+    only refine.
+    """
     diagonal = float(np.linalg.norm(extent))
     thinnest = float(np.min(extent[extent > 0.0])) if np.any(extent > 0.0) else diagonal
+    if volume and area and area > 0.0:
+        thinnest = min(thinnest, 2.0 * float(volume) / float(area))
     return float(
         np.clip(
             thinnest / ELEMENTS_THROUGH_THICKNESS,
@@ -133,7 +152,11 @@ def draw(family: Family, rng: np.random.Generator) -> MeshedSample:
             [gmsh.model.getBoundingBox(3, tag) for _, tag in volumes]
         )
         extent = corners[:, 3:].max(axis=0) - corners[:, :3].min(axis=0)
-        size = mesh_size_for(extent)
+        volume = sum(gmsh.model.occ.getMass(3, tag) for _, tag in volumes)
+        area = sum(
+            gmsh.model.occ.getMass(2, tag) for _, tag in gmsh.model.getEntities(2)
+        )
+        size = mesh_size_for(extent, volume, area)
         gmsh.option.setNumber("Mesh.MeshSizeMax", size)
         gmsh.option.setNumber("Mesh.MeshSizeMin", size / 4.0)
         gmsh.model.mesh.generate(3)
