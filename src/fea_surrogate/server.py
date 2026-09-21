@@ -22,6 +22,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 from .predict import Surrogate, screen_step
+from .versions import FEATURE_COLUMNS, LAYOUTS, PROVENANCE
 from .screening import ScreeningContractError
 
 
@@ -90,6 +91,11 @@ def create_mcp(*, surrogate: Surrogate | None = None) -> FastMCP:
             return {
                 "schema_version": "FeaSurrogateStatus/v1",
                 "status": "ok",
+                "feature_version": s.version,
+                "feature_columns": FEATURE_COLUMNS[s.version],
+                "feature_layout": LAYOUTS[s.version],
+                "provenance": PROVENANCE[s.version],
+                "known_versions": PROVENANCE,
                 "model_sha256": s.weights_sha256,
                 "coverage": s.calibration.coverage,
                 "band_factor": round(math.exp(s.calibration.log_half_width), 4),
@@ -105,6 +111,7 @@ def create_mcp(*, surrogate: Surrogate | None = None) -> FastMCP:
     def surrogate_screen_step(
         step_path: str,
         force_n: float,
+        family: str = "",
         characteristic_length_mm: float = 0.0,
     ) -> str:
         """Screen a STEP file and return one SurrogateScreening/v1 document.
@@ -112,12 +119,18 @@ def create_mcp(*, surrogate: Surrogate | None = None) -> FastMCP:
         A screening estimate, never evidence: it cannot complete, block or
         confirm a design. Pass `characteristic_length_mm` when the file's units
         are not millimetres; 0 uses the bounding-box diagonal as found.
+
+        `family` selects the calibration band. Naming it earns the band that
+        family measured; leaving it empty earns the widest band any family
+        measured, because a part whose group is unknown has not been shown to
+        be covered at the stated rate by anything narrower.
         """
         return _tool_call(
             lambda: screen_step(
                 get(),
                 step_path,
                 force_n=force_n,
+                family=family or None,
                 characteristic_length_mm=(
                     characteristic_length_mm if characteristic_length_mm > 0 else None
                 ),

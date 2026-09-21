@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 from .features import build_graph, mesh_step, nearest_load_class
+from .versions import DEFAULT_VERSION, SFEM_V1
 from .model import load_model
 from .screening import (
     Calibration,
@@ -50,14 +51,25 @@ class Surrogate:
     weights_sha256: str
     domain: dict[str, Any]
     limitations: list[str]
+    version: str = DEFAULT_VERSION
+    model_name: str = "sweep-mesh-gnn"
+    model_version: str = "0.3.0"
 
     @classmethod
     def load(
         cls, weights: str | Path, calibration_json: str | Path, *, device: str = "cpu"
     ) -> "Surrogate":
         raw = json.loads(Path(calibration_json).read_text(encoding="utf-8"))
+        # The feature version is declared by the run that produced the weights.
+        # Guessing it would pair a model with a feature construction it was
+        # never fitted on, which fails silently rather than loudly.
+        version = str(raw.get("features", {}).get("version", DEFAULT_VERSION))
+        identity = raw.get("model", {})
         return cls(
-            model=load_model(weights, device=device),
+            version=version,
+            model_name=str(identity.get("name", "sweep-mesh-gnn")),
+            model_version=str(identity.get("version", "0.3.0")),
+            model=load_model(weights, version=version, device=device),
             calibration=Calibration.from_file(calibration_json),
             normaliser=Normaliser.from_file(calibration_json),
             weights_sha256=file_sha256(weights),
@@ -67,8 +79,14 @@ class Surrogate:
 
     def peak_tau(self, data) -> float:  # noqa: ANN001 - torch_geometric Data
         with torch.no_grad():
-            tau = self.normaliser.decode(self.model(data).reshape(-1))
-        return float(tau.max().item())
+            out = self.model(data).reshape(-1)
+            if self.version == SFEM_V1:
+                # v1 predicts a field; its peak is the maximum over nodes.
+                return float(self.normaliser.decode(out).max().item())
+            # v2 predicts the peak itself, in log space.
+            return float(torch.exp(
+                out * (self.normaliser.log_std + 1e-5) + self.normaliser.log_mean
+            ).item())
 
 
 def screen_step(
@@ -95,8 +113,13 @@ def screen_step(
     if force_n <= 0 or not np.isfinite(force_n):
         raise ScreeningContractError("force_n must be a positive, finite number")
 
-    mesh = mesh_step(step_path)
-    data = build_graph(mesh, fixed_vertices=fixed_vertices, force_n=force_n)
+    mesh = mesh_step(step_path, version=surrogate.version)
+    data = build_graph(
+        mesh,
+        version=surrogate.version,
+        fixed_vertices=fixed_vertices,
+        force_n=force_n,
+    )
     tau = surrogate.peak_tau(data)
     calibration = surrogate.calibration.for_family(family)
     lo_tau, hi_tau = calibration.band(tau)
@@ -119,11 +142,16 @@ def screen_step(
     # The band is per family, so the document has to say which one it used.
     # An interval qualified by the wrong group is not qualified.
     domain["calibration_family"] = family or "unknown_widest_band"
+    domain["feature_version"] = surrogate.version
 
     assumptions = [
         "linear elastic, small displacement",
         f"load {force_n:g} N snapped to the trained class {snapped_force:g} N",
-        "geometry rescaled into the training bounding box [0,3]^3",
+        (
+            "geometry rescaled into the fixed [0,3]^3 training box"
+            if surrogate.version == SFEM_V1
+            else "geometry kept in its own millimetres"
+        ),
         f"characteristic length taken as {length_mm:g} mm (bounding-box diagonal)",
         (
             f"band from the {family!r} calibration set "
@@ -135,8 +163,8 @@ def screen_step(
 
     return build_document(
         screened_sha256=file_sha256(step_path),
-        model_name="sfem-mesh-gnn",
-        model_version="0.2.0",
+        model_name=surrogate.model_name,
+        model_version=surrogate.model_version,
         model_sha256=surrogate.weights_sha256,
         calibration=calibration,
         domain=domain,
