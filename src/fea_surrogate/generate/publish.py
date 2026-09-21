@@ -1,6 +1,6 @@
 """Publish a swept dataset to the Hugging Face Hub as a private dataset.
 
-    huggingface-cli login          # once, stores the token
+    hf auth login                  # once, stores the token
     python -m fea_surrogate.generate.publish --data data/sweep --repo fea-sweep
 
 The token is read from `HF_TOKEN` if set, otherwise from the stored login. It is
@@ -148,8 +148,9 @@ def publish(data_dir: Path, repo: str, *, private: bool = True) -> str:
         api.whoami()
     except Exception:
         raise SystemExit(
-            "not authenticated. Run `huggingface-cli login` with a write token "
-            "from https://huggingface.co/settings/tokens, or set HF_TOKEN."
+            "not authenticated. Run `hf auth login` with a write token from "
+            "https://huggingface.co/settings/tokens, or set HF_TOKEN. "
+            "(`huggingface-cli login` is deprecated and no longer works.)"
         ) from None
 
     manifest_path = data_dir / "manifest.json"

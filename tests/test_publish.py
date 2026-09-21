@@ -46,7 +46,7 @@ def test_publishing_unauthenticated_refuses(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
     (tmp_path / "manifest.json").write_text(json.dumps(MANIFEST), encoding="utf-8")
 
-    with pytest.raises(SystemExit, match="not authenticated|huggingface-cli login"):
+    with pytest.raises(SystemExit, match="not authenticated|hf auth login"):
         publish(tmp_path, "someone/sweep")
 
 
