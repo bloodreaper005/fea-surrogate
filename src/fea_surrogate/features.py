@@ -112,7 +112,9 @@ def mesh_step(path: str | Path, *, version: str = DEFAULT_VERSION) -> ScaledMesh
         ]
         if not triangles:
             raise MeshingError("meshing produced no triangles")
-        faces = np.concatenate(triangles, axis=0).T
+        # Transposing leaves a non-contiguous view, and torch_geometric's
+        # transforms call .view() on it, which fails on that stride.
+        faces = np.ascontiguousarray(np.concatenate(triangles, axis=0).T)
     finally:
         gmsh.finalize()
 

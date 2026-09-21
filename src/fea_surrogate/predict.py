@@ -134,11 +134,13 @@ def screen_step(
 
     # sigma[MPa] = tau * F[N] / L[mm]^2, because MPa is N/mm^2.
     factor = force_n / (length_mm ** 2)
-    snapped_index, snapped_force = nearest_load_class(force_n)
 
     domain = dict(surrogate.domain)
     domain["characteristic_length_mm"] = {"min": 1.0, "max": 10_000.0}
-    domain["load_class_snapped_to_n"] = snapped_force
+    if surrogate.version == SFEM_V1:
+        # v1 only. v2 handles force exactly through the dimensionless target,
+        # so claiming a snap there would be stating a false assumption.
+        domain["load_class_snapped_to_n"] = nearest_load_class(force_n)[1]
     # The band is per family, so the document has to say which one it used.
     # An interval qualified by the wrong group is not qualified.
     domain["calibration_family"] = family or "unknown_widest_band"
@@ -146,7 +148,12 @@ def screen_step(
 
     assumptions = [
         "linear elastic, small displacement",
-        f"load {force_n:g} N snapped to the trained class {snapped_force:g} N",
+        (
+            f"load {force_n:g} N snapped to the trained class "
+            f"{nearest_load_class(force_n)[1]:g} N"
+            if surrogate.version == SFEM_V1
+            else f"load {force_n:g} N carried exactly by the dimensionless target"
+        ),
         (
             "geometry rescaled into the fixed [0,3]^3 training box"
             if surrogate.version == SFEM_V1
