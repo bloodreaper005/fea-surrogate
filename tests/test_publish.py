@@ -41,16 +41,22 @@ def test_the_card_declares_its_limitations() -> None:
         assert fragment in card
 
 
-def test_publishing_without_a_token_refuses(tmp_path, monkeypatch) -> None:
+def test_publishing_unauthenticated_refuses(tmp_path, monkeypatch) -> None:
+    """Neither an environment token nor a stored login."""
     monkeypatch.delenv("HF_TOKEN", raising=False)
     (tmp_path / "manifest.json").write_text(json.dumps(MANIFEST), encoding="utf-8")
 
-    with pytest.raises(SystemExit, match="HF_TOKEN"):
+    with pytest.raises(SystemExit, match="not authenticated|huggingface-cli login"):
         publish(tmp_path, "someone/sweep")
 
 
-def test_publishing_without_a_sweep_refuses(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("HF_TOKEN", "hf_fake")
+def test_an_ownerless_repo_resolves_against_the_logged_in_user() -> None:
+    """`--repo fea-sweep` should not require knowing your own username."""
+    from fea_surrogate.generate.publish import _resolve
 
-    with pytest.raises(SystemExit, match="no manifest"):
-        publish(tmp_path, "someone/sweep")
+    class Api:
+        def whoami(self):
+            return {"name": "someone"}
+
+    assert _resolve("fea-sweep", Api()) == "someone/fea-sweep"
+    assert _resolve("other/fea-sweep", Api()) == "other/fea-sweep"

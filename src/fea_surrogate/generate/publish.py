@@ -1,7 +1,11 @@
 """Publish a swept dataset to the Hugging Face Hub as a private dataset.
 
-    export HF_TOKEN=hf_...
-    python -m fea_surrogate.generate.publish --data data/sweep --repo you/name
+    huggingface-cli login          # once, stores the token
+    python -m fea_surrogate.generate.publish --data data/sweep --repo fea-sweep
+
+The token is read from `HF_TOKEN` if set, otherwise from the stored login. It is
+never taken as an argument, so it cannot end up in a shell history or a
+transcript. An owner-less `--repo` is resolved against whoever is logged in.
 
 The card is generated from the manifest rather than written by hand, so what it
 claims about the data is what the data says. In particular it carries
@@ -122,25 +126,41 @@ def build_card(manifest: dict[str, Any], repo: str) -> str:
     )
 
 
+def _resolve(repo: str, api) -> str:
+    """Let `--repo name` mean `<whoever is logged in>/name`."""
+    if "/" in repo:
+        return repo
+    try:
+        owner = api.whoami()["name"]
+    except Exception as exc:
+        raise SystemExit(f"cannot resolve an owner for {repo!r}: {exc}") from None
+    return f"{owner}/{repo}"
+
+
 def publish(data_dir: Path, repo: str, *, private: bool = True) -> str:
     from huggingface_hub import HfApi
 
-    token = os.environ.get("HF_TOKEN", "").strip()
-    if not token:
+    # Environment first, then the stored login. Never an argument: a token
+    # passed on a command line lands in shell history.
+    token = os.environ.get("HF_TOKEN", "").strip() or None
+    api = HfApi(token=token)
+    try:
+        api.whoami()
+    except Exception:
         raise SystemExit(
-            "HF_TOKEN is not set. Create a write token at "
-            "https://huggingface.co/settings/tokens and export it."
-        )
+            "not authenticated. Run `huggingface-cli login` with a write token "
+            "from https://huggingface.co/settings/tokens, or set HF_TOKEN."
+        ) from None
 
     manifest_path = data_dir / "manifest.json"
     if not manifest_path.is_file():
         raise SystemExit(f"no manifest.json in {data_dir}; run the sweep first")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
+    repo = _resolve(repo, api)
     card = data_dir / "README.md"
     card.write_text(build_card(manifest, repo), encoding="utf-8")
 
-    api = HfApi(token=token)
     api.create_repo(repo, repo_type="dataset", private=private, exist_ok=True)
     api.upload_folder(
         repo_id=repo,
