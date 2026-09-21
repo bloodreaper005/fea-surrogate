@@ -9,29 +9,7 @@ commit that acts on it.
 
 ---
 
-## 1. One regression head, or a family embedding?
-
-**The question.** Across a single sample each, the dimensionless peak `tau`
-ranged from 6.8 on a flange to 48,550 on a spring — three to four orders of
-magnitude, and the families separate cleanly. Does one head learn the whole
-range, or does each family need its own conditioning?
-
-**Why it is not mine to settle.** Both are defensible. One head is a stronger
-claim — it says the model has learned the operator rather than six lookup
-tables — and it is what would let a seventh family work without retraining. A
-family embedding will fit better on the families you have and will do nothing
-for the one you add next. That is a judgement about what the surrogate is for.
-
-**What would settle it.** Train both on the swept dataset and compare the
-conformal band, per family. If one head's band is materially wider on the
-extreme families than a conditioned model's, the spread is real rather than
-something capacity fixes.
-
-**Until then.** One head, because it is the claim that can be falsified.
-
----
-
-## 2. Is 0.27 to 0.42 the right Poisson envelope?
+## 1. Is 0.27 to 0.42 the right Poisson envelope?
 
 **The question.** The sweep draws `nu` uniformly over 0.27–0.42, chosen to span
 steel, aluminium and most engineering polymers. Is that the envelope your
@@ -49,7 +27,7 @@ it is refused rather than silently extrapolated.
 
 ---
 
-## 3. Should displacement be a second head?
+## 2. Should displacement be a second head?
 
 **The question.** You asked early on for deformation contours alongside von
 Mises. The solver computes displacement already; it simply is not a label.
@@ -68,7 +46,7 @@ adding it later costs a re-sweep and nothing else.
 
 ---
 
-## 4. How much variation in load pattern?
+## 3. How much variation in load pattern?
 
 **The question.** Each family applies one uniform traction over a fixed set of
 faces. Real parts see distributed pressure, contact patches, and loads that move.
@@ -86,7 +64,7 @@ features — already the thing SFEM omitted.
 
 ---
 
-## 5. When is the dataset big enough?
+## 4. When is the dataset big enough?
 
 **The question.** 3000 samples is a guess. The honest answer is whatever makes
 the conformal band stop narrowing.
@@ -104,4 +82,39 @@ improves on SFEM's ×/÷ 19.75 at all.
 
 ## Answered
 
-*(nothing yet)*
+### One regression head, or a family embedding? — **one head, calibrated per family**
+
+Settled by the first swept run, and the evidence pointed somewhere neither
+option anticipated: the problem was the **band**, not the model.
+
+A single head reached a shared band of ×/÷ 1.91 against SFEM's ×/÷ 19.75, and
+marginal coverage of 0.904 — apparently dead on target. Per family:
+
+| family | own band | coverage under the shared band |
+| --- | --- | --- |
+| pulley | ×/÷ 1.46 | 1.00 |
+| bracket | ×/÷ 1.59 | 0.98 |
+| stepped_shaft | ×/÷ 1.59 | 0.99 |
+| flange | ×/÷ 1.66 | 0.98 |
+| spring | ×/÷ 1.70 | 0.95 |
+| **welded_t** | **×/÷ 2.99** | **0.58** |
+
+The average was reached by over-covering five families and badly under-covering
+one. A welded T joint was inside its stated interval 58% of the time against a
+claimed 90%.
+
+The model did not need conditioning — it predicts every family well enough that
+five of six sit within ×/÷ 1.7. What needed conditioning was the calibration.
+So: one head, which keeps the falsifiable claim that geometry alone determines
+the answer and that a seventh family should work without retraining; and
+Mondrian per-family conformal bands, which restore a per-family coverage
+guarantee.
+
+A part whose family is not named gets the **widest** band rather than the
+average, because an estimate whose group is unknown has not been shown to be
+covered at the stated rate by anything narrower.
+
+*Left open by this:* whether the family must be declared at inference, or
+whether residual-normalised conformal — scaling the band by predicted
+difficulty — can recover per-group coverage with no label. The second is more
+elegant and untested here.

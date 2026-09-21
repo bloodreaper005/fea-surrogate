@@ -177,3 +177,55 @@ def test_calibration_loads_from_a_training_run_record(tmp_path: Path) -> None:
     assert calibration.set_size == 1464
     assert calibration.coverage == 0.9
     assert calibration.log_half_width == pytest.approx(2.98)
+
+
+def test_a_named_family_earns_its_own_band() -> None:
+    """One shared band covered welded T joints 0.58 of the time at a claimed 0.90."""
+    calibration = _calibration(
+        log_half_width=math.log(1.91),
+        delta=0.0,
+        bands={
+            "welded_t": {"log_half_width": math.log(2.99), "set_size": 100},
+            "pulley": {"log_half_width": math.log(1.46), "set_size": 100},
+        },
+    )
+
+    weld_lo, weld_hi = calibration.for_family("welded_t").band(100.0)
+    pulley_lo, pulley_hi = calibration.for_family("pulley").band(100.0)
+
+    assert weld_hi / weld_lo > pulley_hi / pulley_lo
+    assert weld_hi == pytest.approx(299.0, rel=1e-3)
+    assert pulley_hi == pytest.approx(146.0, rel=1e-3)
+
+
+@pytest.mark.parametrize("family", [None, "unseen_family"])
+def test_an_unknown_family_gets_the_widest_band_not_the_average(family) -> None:
+    """A group that was never measured has not been shown to be covered."""
+    calibration = _calibration(
+        log_half_width=math.log(1.91),
+        delta=0.0,
+        bands={
+            "welded_t": {"log_half_width": math.log(2.99), "set_size": 100},
+            "pulley": {"log_half_width": math.log(1.46), "set_size": 100},
+        },
+    )
+
+    lo, hi = calibration.for_family(family).band(100.0)
+
+    assert hi == pytest.approx(299.0, rel=1e-3)
+
+
+def test_a_calibration_without_bands_is_unchanged_by_family() -> None:
+    calibration = _calibration(log_half_width=math.log(2.0), delta=0.0)
+
+    assert calibration.for_family("anything") is calibration
+
+
+def test_per_family_set_size_is_reported_not_the_total() -> None:
+    """The band was measured on that family's residuals, so that is the n."""
+    calibration = _calibration(
+        set_size=533,
+        bands={"pulley": {"log_half_width": 0.4, "set_size": 100}},
+    )
+
+    assert calibration.for_family("pulley").set_size == 100

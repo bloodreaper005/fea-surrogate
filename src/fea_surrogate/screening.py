@@ -14,7 +14,7 @@ import hashlib
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -44,6 +44,13 @@ class Calibration:
     `coverage` is a claim the consumer stores and cannot verify, so it is only
     meaningful alongside `set_size` and `set_sha256`, which say what it was
     measured on.
+
+    Bands are held per family because one shared band is not honest across
+    them. Measured on the first swept run, a single band gave 0.90 coverage
+    overall while covering welded T joints 0.58 of the time and pulleys 1.00:
+    the average was reached by over-covering five families and badly
+    under-covering one. `for_family` selects the band that family's own
+    residuals earned.
     """
 
     method: str
@@ -52,6 +59,7 @@ class Calibration:
     coverage: float
     log_half_width: float
     delta: float
+    bands: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
 
     @classmethod
     def from_file(cls, path: str | Path) -> "Calibration":
@@ -64,6 +72,32 @@ class Calibration:
             coverage=float(raw["coverage"]),
             log_half_width=float(cal["log_half_width"]),
             delta=float(cal.get("delta", 0.0)),
+            bands=dict(cal.get("bands", {})),
+        )
+
+    def for_family(self, family: str | None) -> "Calibration":
+        """The band this family earned, or the widest one if it is unknown.
+
+        An unnamed family gets the worst case rather than the average. A
+        screening estimate whose group is unknown has not been shown to be
+        covered at the stated rate by anything narrower.
+        """
+        if family is not None and family in self.bands:
+            entry = self.bands[family]
+            return replace(
+                self,
+                log_half_width=float(entry["log_half_width"]),
+                set_size=int(entry.get("set_size", self.set_size)),
+            )
+        if not self.bands:
+            return self
+        widest = max(
+            self.bands.values(), key=lambda e: float(e["log_half_width"])
+        )
+        return replace(
+            self,
+            log_half_width=float(widest["log_half_width"]),
+            set_size=int(widest.get("set_size", self.set_size)),
         )
 
     def band(self, value: float) -> tuple[float, float]:

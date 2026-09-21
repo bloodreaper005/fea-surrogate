@@ -76,6 +76,7 @@ def screen_step(
     step_path: str | Path,
     *,
     force_n: float,
+    family: str | None = None,
     characteristic_length_mm: float | None = None,
     fixed_vertices: np.ndarray | None = None,
 ) -> dict[str, Any]:
@@ -85,6 +86,11 @@ def screen_step(
     real size and load: sigma[MPa] = tau * F[N] / L[mm]^2, where L is the
     bounding-box diagonal. Pass `characteristic_length_mm` when the STEP file's
     units are not millimetres.
+
+    `family` selects the calibration band. Naming it earns the band that family
+    measured; leaving it out earns the widest band any family measured, because
+    a part whose group is unknown has not been shown to be covered at the
+    stated rate by anything narrower.
     """
     if force_n <= 0 or not np.isfinite(force_n):
         raise ScreeningContractError("force_n must be a positive, finite number")
@@ -92,7 +98,8 @@ def screen_step(
     mesh = mesh_step(step_path)
     data = build_graph(mesh, fixed_vertices=fixed_vertices, force_n=force_n)
     tau = surrogate.peak_tau(data)
-    lo_tau, hi_tau = surrogate.calibration.band(tau)
+    calibration = surrogate.calibration.for_family(family)
+    lo_tau, hi_tau = calibration.band(tau)
 
     length_mm = (
         float(characteristic_length_mm)
@@ -109,12 +116,21 @@ def screen_step(
     domain = dict(surrogate.domain)
     domain["characteristic_length_mm"] = {"min": 1.0, "max": 10_000.0}
     domain["load_class_snapped_to_n"] = snapped_force
+    # The band is per family, so the document has to say which one it used.
+    # An interval qualified by the wrong group is not qualified.
+    domain["calibration_family"] = family or "unknown_widest_band"
 
     assumptions = [
         "linear elastic, small displacement",
         f"load {force_n:g} N snapped to the trained class {snapped_force:g} N",
         "geometry rescaled into the training bounding box [0,3]^3",
         f"characteristic length taken as {length_mm:g} mm (bounding-box diagonal)",
+        (
+            f"band from the {family!r} calibration set "
+            f"(n={calibration.set_size})"
+            if family
+            else "no family named, so the widest measured band was used"
+        ),
     ]
 
     return build_document(
@@ -122,7 +138,7 @@ def screen_step(
         model_name="sfem-mesh-gnn",
         model_version="0.2.0",
         model_sha256=surrogate.weights_sha256,
-        calibration=surrogate.calibration,
+        calibration=calibration,
         domain=domain,
         predictions=[
             Prediction(
