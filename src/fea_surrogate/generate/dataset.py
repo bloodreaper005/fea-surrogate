@@ -21,8 +21,9 @@ class SweptSample:
     x: np.ndarray            # (N, 13)
     y_nodal: np.ndarray      # (N,) von Mises, averaged onto nodes
     tetrahedra: np.ndarray   # (M, 4) local indices
-    tau: float               # dimensionless peak, the training target
-    peak: float              # peak von Mises in solver units
+    tau: float               # dimensionless critical-distance stress: the target
+    tau_peak: float          # dimensionless raw peak, for comparison only
+    peak: float              # raw peak von Mises in solver units
     poisson: float
     force_n: float
     length_mm: float
@@ -73,6 +74,13 @@ class SweptDataset:
                         # them local again so a sample stands on its own.
                         tetrahedra=data["tetrahedra"][tlo:thi] - lo,
                         tau=float(data["tau"][i]),
+                        # A sweep written before the target changed has no
+                        # tau_peak; its tau *was* the peak.
+                        tau_peak=float(
+                            data["tau_peak"][i]
+                            if "tau_peak" in data.files
+                            else data["tau"][i]
+                        ),
                         peak=float(data["peak"][i]),
                         poisson=float(data["poisson"][i]),
                         force_n=float(data["force_n"][i]),

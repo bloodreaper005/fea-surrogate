@@ -63,6 +63,7 @@ class Surrogate:
     weights_sha256: str
     domain: dict[str, Any]
     limitations: list[str]
+    quantity: str = "von_mises_critical_distance"
     version: str = DEFAULT_VERSION
     model_name: str = "sweep-mesh-gnn"
     model_version: str = "0.3.0"
@@ -87,6 +88,12 @@ class Surrogate:
             weights_sha256=file_sha256(weights),
             domain=dict(raw.get("domain", {})),
             limitations=list(raw.get("limitations", [])),
+            # Named by the run, not hardcoded. A consumer comparing this
+            # against a yield strength has to know it is an averaged stress
+            # and not a peak, and only the training run knows which it is.
+            quantity=str(
+                raw.get("target", {}).get("quantity", "von_mises_critical_distance")
+            ),
         )
 
     def peak_tau(self, data) -> float:  # noqa: ANN001 - torch_geometric Data
@@ -210,6 +217,13 @@ def screen_step(
         ),
         f"held at {fixed_spec}, loaded at {loaded_spec} "
         f"along {direction}, from {origin}",
+        (
+            "stress is volume-averaged over one thin dimension, not a peak: "
+            "an elastic peak at a re-entrant corner is singular and does not "
+            "converge under mesh refinement"
+            if "critical_distance" in surrogate.quantity
+            else f"quantity is {surrogate.quantity}"
+        ),
         *(f"{key}: {value}" for key, value in sorted(provenance.items())),
     ]
 
@@ -222,7 +236,7 @@ def screen_step(
         domain=domain,
         predictions=[
             Prediction(
-                quantity="von_mises_peak",
+                quantity=surrogate.quantity,
                 lower=lo_tau * factor,
                 upper=hi_tau * factor,
                 units="MPa",

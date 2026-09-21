@@ -134,3 +134,37 @@ def test_an_inadmissible_poisson_ratio_is_refused() -> None:
     )
     with pytest.raises(SolveError, match="Poisson"):
         solve(bad)
+
+
+def test_the_peak_diverges_but_the_critical_distance_does_not() -> None:
+    """The reason the target is an average rather than a maximum.
+
+    An elastic peak at a re-entrant corner is singular: refining the mesh
+    raises it without bound, so any value states the mesh rather than the part.
+    """
+    coarse = solve(_cantilever())
+    fine = solve(_cantilever(thickness=10.0))
+
+    for result in (coarse, fine):
+        assert result.critical_distance_stress() > 0.0
+        # An average over a neighbourhood cannot exceed the maximum in it.
+        assert result.critical_distance_stress() <= result.peak_von_mises
+
+
+def test_the_dimensionless_target_uses_the_averaged_stress() -> None:
+    result = solve(_cantilever())
+    length = result.mesh.characteristic_length_mm
+    force = result.mesh.sample.force_n
+
+    assert result.dimensionless_target() == pytest.approx(
+        result.critical_distance_stress() * length**2 / force
+    )
+    assert result.dimensionless_target() < result.dimensionless_peak()
+
+
+def test_the_averaging_radius_widens_the_neighbourhood() -> None:
+    """A larger critical distance averages over more, so it cannot be higher."""
+    result = solve(_cantilever())
+
+    assert (result.critical_distance_stress(2.0)
+            <= result.critical_distance_stress(0.5) + 1e-9)

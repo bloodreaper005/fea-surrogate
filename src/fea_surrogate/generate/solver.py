@@ -27,6 +27,10 @@ from .harness import MeshedSample
 
 YOUNGS_MODULUS = 1.0   # stress is independent of E; see the module docstring
 
+#: Averaging radius for the critical-distance target, as a multiple of the
+#: part's thinnest dimension. See `SolvedSample.critical_distance_stress`.
+CRITICAL_DISTANCE_THICKNESSES = 1.0
+
 
 class SolveError(RuntimeError):
     """The system could not be assembled or solved."""
@@ -49,16 +53,65 @@ class SolvedSample:
     mesh: MeshedSample
     displacement: np.ndarray        # (N, 3)
     von_mises: np.ndarray           # (N,) nodal, averaged — the field
-    element_von_mises: np.ndarray   # (M,) per element — the peak
+    element_von_mises: np.ndarray   # (M,) per element
+    element_volume: np.ndarray      # (M,) for volume weighting
+    element_centroid: np.ndarray    # (M, 3)
 
     @property
     def peak_von_mises(self) -> float:
+        """The raw element maximum. Recorded, but not the training target.
+
+        At a re-entrant corner the elastic peak is singular: it does not
+        converge under refinement. Measured on an L-bracket it ran 419, 558,
+        780, 836 MPa across meshes of 1.5k to 63k nodes and was still climbing,
+        so any value is a statement about the mesh rather than the part.
+        """
         return float(self.element_von_mises.max())
 
+    def critical_distance_stress(self, thicknesses: float | None = None) -> float:
+        """Volume-averaged von Mises around the hottest element.
+
+        The Theory of Critical Distances: average over a characteristic length
+        instead of taking a peak. Notch and weld assessment uses it precisely
+        because those geometries are singular and a peak is not a number.
+
+        On the same L-bracket this read 191, 168, 181, 176 MPa over the mesh
+        range where the peak doubled — converged at the coarsest mesh tried.
+        """
+        radius = (thicknesses or CRITICAL_DISTANCE_THICKNESSES) * self._thinnest()
+        hottest = self.element_centroid[self.element_von_mises.argmax()]
+        near = np.linalg.norm(self.element_centroid - hottest, axis=1) <= radius
+        if not near.any():                      # a radius below one element
+            near = self.element_von_mises == self.element_von_mises.max()
+        weights = self.element_volume[near]
+        return float((self.element_von_mises[near] * weights).sum() / weights.sum())
+
+    def _thinnest(self) -> float:
+        """2V/A, which sees a thin feature the bounding box cannot."""
+        volume = float(self.element_volume.sum())
+        extent = self.mesh.vertices.max(axis=0) - self.mesh.vertices.min(axis=0)
+        faces = self.mesh.surface_faces
+        a, b, c = (self.mesh.vertices[faces[:, i]] for i in range(3))
+        area = float(0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1).sum())
+        box_min = float(np.min(extent[extent > 0.0])) if np.any(extent > 0.0) else 1.0
+        return min(box_min, 2.0 * volume / area) if area > 0.0 else box_min
+
     def dimensionless_peak(self) -> float:
-        """tau = sigma * L^2 / F, the target the surrogate is trained on."""
+        """tau from the raw peak. Kept for comparison; not the target."""
         length = self.mesh.characteristic_length_mm
         return self.peak_von_mises * length**2 / self.mesh.sample.force_n
+
+    def dimensionless_target(self) -> float:
+        """tau = sigma * L^2 / F on the critical-distance stress.
+
+        This is what the surrogate is trained on: dimensionless so it transfers
+        across scale and load, and volume-averaged so it does not depend on the
+        mesher.
+        """
+        length = self.mesh.characteristic_length_mm
+        return (
+            self.critical_distance_stress() * length**2 / self.mesh.sample.force_n
+        )
 
 
 def _elasticity_matrix(poisson: float) -> np.ndarray:
@@ -201,12 +254,14 @@ def solve(sample: MeshedSample) -> SolvedSample:
     # and their nodal average are kept: see SolvedSample for why the peak must
     # not be taken from the averaged field.
     element_stress = np.zeros((len(tets), 6))
+    element_volume = np.zeros(len(tets))
     accumulated = np.zeros((n, 6))
     counts = np.zeros(n)
-    for i, (element, (gradients, _)) in enumerate(zip(tets, gradients_cache)):
+    for i, (element, (gradients, volume)) in enumerate(zip(tets, gradients_cache)):
         b = _strain_displacement(gradients)
         stress = d_matrix @ (b @ displacement[element].reshape(-1))
         element_stress[i] = stress
+        element_volume[i] = volume
         accumulated[element] += stress
         counts[element] += 1.0
     nodal = accumulated / np.maximum(counts, 1.0)[:, None]
@@ -223,6 +278,8 @@ def solve(sample: MeshedSample) -> SolvedSample:
         displacement=displacement,
         von_mises=_von_mises(nodal),
         element_von_mises=_von_mises(element_stress),
+        element_volume=element_volume,
+        element_centroid=vertices[tets].mean(axis=1),
     )
 
 

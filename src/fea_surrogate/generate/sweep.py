@@ -47,6 +47,7 @@ class Drawn:
     tetrahedra: np.ndarray
     peak: float
     tau: float
+    tau_peak: float
     poisson: float
     force_n: float
     length_mm: float
@@ -60,8 +61,9 @@ def _one(family_name: str, seed: int) -> Drawn | None:
         meshed = draw(family, np.random.default_rng(seed))
         result = solve(meshed)
         peak = float(result.peak_von_mises)
-        tau = float(result.dimensionless_peak())
-        if not (np.isfinite(peak) and np.isfinite(tau) and peak > 0.0):
+        tau = float(result.dimensionless_target())      # the training target
+        tau_peak = float(result.dimensionless_peak())   # kept for comparison
+        if not (np.isfinite(peak) and np.isfinite(tau) and tau > 0.0):
             return None
         return Drawn(
             family=family_name,
@@ -70,6 +72,7 @@ def _one(family_name: str, seed: int) -> Drawn | None:
             tetrahedra=meshed.tetrahedra.astype(np.int32),
             peak=peak,
             tau=tau,
+            tau_peak=tau_peak,
             poisson=float(meshed.sample.poisson_ratio),
             force_n=float(meshed.sample.force_n),
             length_mm=float(meshed.characteristic_length_mm),
@@ -99,6 +102,7 @@ def _write_shard(path: Path, samples: list[Drawn]) -> None:
         tet_offsets=tet_offsets,
         peak=np.array([s.peak for s in samples], dtype=np.float64),
         tau=np.array([s.tau for s in samples], dtype=np.float64),
+        tau_peak=np.array([s.tau_peak for s in samples], dtype=np.float64),
         poisson=np.array([s.poisson for s in samples], dtype=np.float64),
         force_n=np.array([s.force_n for s in samples], dtype=np.float64),
         length_mm=np.array([s.length_mm for s in samples], dtype=np.float64),
@@ -189,7 +193,16 @@ def _write_manifest(
             total += len(data["tau"])
 
     manifest = {
-        "schema_version": "FeaSurrogateSweep/v1",
+        "schema_version": "FeaSurrogateSweep/v2",
+        "target": {
+            "quantity": "von_mises_critical_distance",
+            "averaging": "volume-weighted over one thin dimension (2V/A)",
+            "why": (
+                "a re-entrant corner peak is singular and does not converge; "
+                "measured on an L-bracket the peak spread 64% over a 40x node "
+                "range where this spread 12% without trend"
+            ),
+        },
         "samples": total,
         "by_family": counts,
         "rejected": rejected,
