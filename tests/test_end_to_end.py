@@ -120,3 +120,35 @@ def test_v2_does_not_claim_the_load_was_snapped(parts, surrogate) -> None:
 def test_a_non_positive_load_is_refused(parts, surrogate) -> None:
     with pytest.raises(Exception, match="positive"):
         screen_step(surrogate, parts["step"], force_n=0.0)
+
+
+def test_provenance_never_reaches_the_domain_gate(parts, surrogate) -> None:
+    """A fact about how a model was made is not a bound a query can satisfy.
+
+    Gating on `source_dataset` made every query fail as `missing`, because no
+    caller can answer what a model was trained on.
+    """
+    document = screen_step(surrogate, parts["step"], force_n=5000.0, family="bracket")
+
+    for descriptive in ("source_dataset", "families", "load_pattern"):
+        assert descriptive not in document["domain"]
+
+
+def test_the_gate_admits_steel_and_refuses_ceramic(parts, surrogate) -> None:
+    """Sweeping Poisson's ratio is what lets a steel query through at all."""
+    pytest.importorskip("mech_cad_design_agent", reason="consumer not on the path")
+    from mech_cad_design_agent.surrogate_domain import evaluate_domain
+    from mech_cad_design_agent.surrogate_screening import parse_surrogate_screening
+
+    document = screen_step(surrogate, parts["step"], force_n=5000.0, family="bracket")
+    domain = parse_surrogate_screening(document).domain
+
+    def query(nu: float) -> dict:
+        return {"material_class": "linear_elastic", "poisson_ratio": nu,
+                "characteristic_length_mm": 210.0, "calibration_family": "bracket",
+                "feature_version": "sweep/v2"}
+
+    assert evaluate_domain(domain, query(0.30)).in_domain      # steel
+    ceramic = evaluate_domain(domain, query(0.22))             # outside the sweep
+    assert not ceramic.in_domain
+    assert ceramic.violations[0]["key"] == "poisson_ratio"

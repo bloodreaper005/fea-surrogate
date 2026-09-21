@@ -12,6 +12,17 @@ import torch
 
 from .features import build_graph, mesh_step, nearest_load_class
 from .versions import DEFAULT_VERSION, SFEM_V1
+
+
+#: Facts about how a model was made. They describe the estimate; they are not
+#: conditions a query can meet, so they must never reach the domain gate.
+PROVENANCE_KEYS = frozenset({
+    "source_dataset",
+    "families",
+    "load_pattern",
+    "dataset",
+    "note",
+})
 from .model import load_model
 from .screening import (
     Calibration,
@@ -135,7 +146,21 @@ def screen_step(
     # sigma[MPa] = tau * F[N] / L[mm]^2, because MPa is N/mm^2.
     factor = force_n / (length_mm ** 2)
 
-    domain = dict(surrogate.domain)
+    # A domain envelope is a set of bounds a query must satisfy. Descriptive
+    # metadata is not a bound: gating on `source_dataset` makes every query
+    # fail as `missing`, because no caller can answer what a model was trained
+    # on. Those facts belong in the assumptions, where they are read rather
+    # than matched.
+    domain = {
+        key: value
+        for key, value in surrogate.domain.items()
+        if key not in PROVENANCE_KEYS
+    }
+    provenance = {
+        key: value
+        for key, value in surrogate.domain.items()
+        if key in PROVENANCE_KEYS
+    }
     domain["characteristic_length_mm"] = {"min": 1.0, "max": 10_000.0}
     if surrogate.version == SFEM_V1:
         # v1 only. v2 handles force exactly through the dimensionless target,
@@ -166,6 +191,7 @@ def screen_step(
             if family
             else "no family named, so the widest measured band was used"
         ),
+        *(f"{key}: {value}" for key, value in sorted(provenance.items())),
     ]
 
     return build_document(
