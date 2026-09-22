@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import torch
@@ -24,6 +24,12 @@ PROVENANCE_KEYS = frozenset({
     "note",
 })
 from .model import load_model
+from .face_selectors import (
+    FAMILY_FACE_PRESETS,
+    FaceSelectionError,
+    face_mask,
+    select_faces,
+)
 from .selectors import resolve, select
 from .screening import (
     Calibration,
@@ -108,6 +114,73 @@ class Surrogate:
             ).item())
 
 
+#: Families whose shipped calibration does not transfer to real CAD, with the
+#: reason. A band measured on held-out samples is only meaningful if a screened
+#: part produces the same features the sweep did, and for these it does not.
+#:
+#: spring: `addPipe` left its profile face in the model, so every swept spring
+#: carried a doubled node set on its bottom end -- 49 nodes where the top had 25,
+#: two faces 0.044 mm apart sharing none. A STEP export drops the orphan, so a
+#: screened spring is not the part the model was fitted on. Measured over 100
+#: fresh springs the deployed estimate came in at 0.006 of truth with coverage
+#: 0.00, while the same model fed sweep-path features scored 1.02. The geometry
+#: is fixed in `generate/families/spring.py`; the shipped weights are not, and
+#: clearing this entry needs a spring re-sweep and a retrain.
+UNTRANSFERABLE_FAMILIES = {
+    "spring": (
+        "the shipped weights were fitted on spring geometry carrying a "
+        "duplicated end face, which real CAD does not have. Measured on 100 "
+        "fresh springs the estimate was 0.006 of the solved value at 0.00 "
+        "coverage, so it is refused rather than reported. Re-sweep and retrain "
+        "the spring family to clear this."
+    ),
+}
+
+
+#: A selector naming faces rather than node coordinates. These are the ones that
+#: reproduce what the sweep trained on.
+_FACE_KEYS = frozenset({"faces", "centroid", "radial"})
+
+
+def _is_face_selector(spec: Any) -> bool:
+    return isinstance(spec, Mapping) and bool(_FACE_KEYS & set(spec))
+
+
+def _resolve_specs(
+    family: str | None,
+    fixed: Mapping[str, Any] | None,
+    loaded: Mapping[str, Any] | None,
+    direction: list[float] | None,
+) -> tuple[Mapping[str, Any], Mapping[str, Any], list[float], str]:
+    """Explicit selectors win; a named family supplies face presets otherwise.
+
+    The presets are the face-based ones. The node-coordinate presets they replace
+    selected different regions from the tags the sweep trained on -- a tangent
+    sliver of a spring instead of its end coil -- and put deployed coverage at
+    0.415 against a calibrated 0.90.
+    """
+    if fixed is not None and loaded is not None:
+        return fixed, loaded, direction or [0.0, 0.0, -1.0], "caller-supplied selectors"
+    preset = FAMILY_FACE_PRESETS.get(family or "")
+    if preset is None:
+        # Fall through to the node-selector resolver, which raises the error
+        # explaining that a load case cannot be guessed.
+        return resolve(family, fixed, loaded, direction)
+    return (
+        fixed if fixed is not None else preset["fixed"],
+        loaded if loaded is not None else preset["loaded"],
+        direction or list(preset["direction"]),
+        f"{family!r} family face preset",
+    )
+
+
+def _mask(spec: Mapping[str, Any], mesh, role: str) -> np.ndarray:  # noqa: ANN001
+    """A node mask from either a face selector or a node-coordinate selector."""
+    if _is_face_selector(spec):
+        return face_mask(select_faces(spec, mesh, role), mesh)
+    return select(spec, mesh.vertices, role)
+
+
 def screen_step(
     surrogate: Surrogate,
     step_path: str | Path,
@@ -139,15 +212,22 @@ def screen_step(
     if force_n <= 0 or not np.isfinite(force_n):
         raise ScreeningContractError("force_n must be a positive, finite number")
 
-    fixed_spec, loaded_spec, direction, origin = resolve(
+    if family in UNTRANSFERABLE_FAMILIES:
+        raise ScreeningContractError(
+            f"{family}: {UNTRANSFERABLE_FAMILIES[family]}"
+        )
+
+    mesh = mesh_step(step_path, version=surrogate.version)
+    fixed_spec, loaded_spec, direction, origin = _resolve_specs(
         family, fixed, loaded, load_direction
     )
-    mesh = mesh_step(step_path, version=surrogate.version)
+    fixed_mask = _mask(fixed_spec, mesh, "fixed")
+    loaded_mask = _mask(loaded_spec, mesh, "loaded")
     data = build_graph(
         mesh,
         version=surrogate.version,
-        fixed_vertices=select(fixed_spec, mesh.vertices, "fixed"),
-        loaded_vertices=select(loaded_spec, mesh.vertices, "loaded"),
+        fixed_vertices=fixed_mask,
+        loaded_vertices=loaded_mask,
         load_direction=tuple(direction),
         force_n=force_n,
     )

@@ -60,6 +60,14 @@ class Spring:
         )
         face = occ.addPlaneSurface([occ.addCurveLoop([profile])])
         occ.addPipe([(2, face)], path)
+        # `addPipe` does not consume its profile: the original plane surface
+        # stays in the model, a hair away from the swept solid's bottom cap.
+        # gmsh then meshes both -- measured on one sample, 24 nodes on the cap
+        # and 25 on the leftover profile, 0.044 mm apart and sharing none --
+        # so the bottom end of every swept spring carried twice the nodes the
+        # top did. A STEP export drops the orphan, which is why a screened
+        # spring and a swept spring were not the same part at all.
+        occ.remove([(2, face)])
 
     def tag(self, params: dict[str, float]) -> Tagging:
         wire = params["wire_diameter_mm"]

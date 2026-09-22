@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 import numpy as np
 import torch
@@ -56,6 +57,16 @@ class ScaledMesh:
     scale: float
     original_diagonal: float
     tetrahedra: np.ndarray | None = None   # (M, 4); sweep/v2 only
+    # CAD face tag -> the mesh nodes on that face. Captured while gmsh is still
+    # alive, because a boundary condition has to be selected the way the sweep
+    # selected it: by face, not by node coordinate. Selecting by coordinate is
+    # what put deployed coverage at 0.415 against a calibrated 0.90.
+    face_nodes: Mapping[int, np.ndarray] | None = None
+    face_centroids: Mapping[int, tuple[float, float, float]] | None = None
+    # min(smallest bbox extent, 2V/A). The bounding box cannot see a thin
+    # internal feature and 2V/A can, which is why the tags express their
+    # tolerances against it rather than against an overall dimension.
+    thinnest: float | None = None
 
 
 def mesh_step(path: str | Path, *, version: str = DEFAULT_VERSION) -> ScaledMesh:
@@ -86,6 +97,7 @@ def mesh_step(path: str | Path, *, version: str = DEFAULT_VERSION) -> ScaledMesh
         if not np.isfinite(diagonal) or diagonal <= 0.0:
             raise MeshingError("geometry has no finite extent")
 
+        thinnest = float(np.min(extent[extent > 0.0]))
         if version == SFEM_V1:
             span = float(max(SDF_BBOX_MAX) - min(SDF_BBOX_MIN))
             scale = span / float(extent.max())
@@ -99,7 +111,6 @@ def mesh_step(path: str | Path, *, version: str = DEFAULT_VERSION) -> ScaledMesh
                 gmsh.model.occ.getMass(2, tag)
                 for _, tag in gmsh.model.getEntities(2)
             )
-            thinnest = float(np.min(extent[extent > 0.0]))
             if area > 0.0:
                 thinnest = min(thinnest, 2.0 * volume / area)
             size = float(np.clip(thinnest / 4.0, diagonal / 80.0, diagonal / 8.0))
@@ -126,6 +137,19 @@ def mesh_step(path: str | Path, *, version: str = DEFAULT_VERSION) -> ScaledMesh
         # transforms call .view() on it, which fails on that stride.
         faces = np.ascontiguousarray(np.concatenate(triangles, axis=0).T)
 
+        face_nodes: dict[int, np.ndarray] = {}
+        face_centroids: dict[int, tuple[float, float, float]] = {}
+        for _, tag in gmsh.model.getEntities(2):
+            node_tags, _, _ = gmsh.model.mesh.getNodes(2, int(tag),
+                                                       includeBoundary=True)
+            if node_tags.size == 0:
+                continue
+            face_nodes[int(tag)] = np.array(
+                sorted({index[int(t)] for t in node_tags}), dtype=np.int64
+            )
+            centre = gmsh.model.occ.getCenterOfMass(2, int(tag))
+            face_centroids[int(tag)] = tuple(float(c) for c in centre)
+
         tetrahedra = None
         if version != SFEM_V1:
             tet_types, _, tet_nodes = gmsh.model.mesh.getElements(dim=3)
@@ -151,6 +175,9 @@ def mesh_step(path: str | Path, *, version: str = DEFAULT_VERSION) -> ScaledMesh
         scale=scale,
         original_diagonal=diagonal,
         tetrahedra=tetrahedra,
+        face_nodes=face_nodes,
+        face_centroids=face_centroids,
+        thinnest=thinnest,
     )
 
 

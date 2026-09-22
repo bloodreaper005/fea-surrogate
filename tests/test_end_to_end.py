@@ -146,7 +146,10 @@ def test_explicit_selectors_win_over_a_family_preset(parts, surrogate) -> None:
         fixed={"axis": "z", "at": "min"}, loaded={"axis": "z", "at": "max"},
     )
 
-    assert any("family preset" in a for a in preset["assumptions"])
+    # "face preset", not "family preset": the presets select faces now, because
+    # the node-coordinate ones selected different regions from the tags the
+    # sweep trained on.
+    assert any("family face preset" in a for a in preset["assumptions"])
     assert any("caller-supplied" in a for a in override["assumptions"])
     assert (preset["predictions"][0]["upper"]
             != override["predictions"][0]["upper"])
