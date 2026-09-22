@@ -83,22 +83,28 @@ that entry needs a spring re-sweep and a retrain, not a code change.
 
 ## 2026-09-22 — after the selector repair
 
-| family | before | after |
-| --- | --- | --- |
-| bracket | 0.46 | 0.83 |
-| flange | 0.00 | 0.96 |
-| pulley | 0.59 | 0.94 |
-| stepped_shaft | 0.77 | 0.93 |
-| welded_t | 0.67 | 0.90 |
-| spring | 0.00 | 0.00 → now refused |
-| **overall** | **0.415** | **0.760** |
+| family | before | after | median pred/true |
+| --- | --- | --- | --- |
+| bracket | 0.46 | 0.82 | 0.86 |
+| flange | 0.00 | 0.97 | 0.96 |
+| pulley | 0.59 | 0.94 | 0.89 |
+| stepped_shaft | 0.77 | 0.93 | 0.91 |
+| welded_t | 0.67 | 0.90 | 1.16 |
+| spring | 0.00 | refused, 100/100 | — |
 
-Five of six families sit at or near nominal. The overall figure is held down by
-spring, which is refused rather than reported.
+**Overall 0.912 on n=500 against a calibrated 0.90**, standard error 0.013. The
+gate passes on the five screenable families.
 
-Bracket at 0.83 is the one still meaningfully below its 0.90, and it is not
-obviously noise — the standard error at n=100 is 0.030, so 0.83 is about two
-standard errors low. Worth a look before anyone calls this finished.
+Two runs a few hours apart, one before and one after the Poisson-passing fix,
+agreed within a point on every family (0.83/0.96/0.94/0.93/0.90 against
+0.82/0.97/0.94/0.93/0.90), so these are reproducible rather than one lucky draw.
+
+Bracket at 0.82 is the one still below its 0.90, and it is not obviously noise —
+the standard error at n=100 is 0.030, so it sits more than two standard errors
+low, and it came back twice. Its median pred/true of 0.86 says the band is
+centred slightly low rather than being too narrow. Worth a look before anyone
+calls this finished; recorded as question 7 in
+[OPEN_QUESTIONS.md](OPEN_QUESTIONS.md).
 
 ---
 
