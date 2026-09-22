@@ -61,31 +61,38 @@ class SweptDataset:
     def __iter__(self) -> Iterator[SweptSample]:
         for shard in self.shards:
             with np.load(shard, allow_pickle=False) as data:
+                # Read each array once. Indexing an NpzFile decompresses the
+                # whole array every time, so slicing inside the loop made this
+                # quadratic: 500 samples took 794 seconds.
+                x_all = data["x"]
+                y_all = data["y_nodal"]
+                tet_all = data["tetrahedra"]
                 node_offsets = data["node_offsets"]
                 tet_offsets = data["tet_offsets"]
-                for i in range(len(data["tau"])):
-                    lo, hi = node_offsets[i], node_offsets[i + 1]
-                    tlo, thi = tet_offsets[i], tet_offsets[i + 1]
-                    yield SweptSample(
-                        family=str(data["family"][i]),
-                        x=data["x"][lo:hi],
-                        y_nodal=data["y_nodal"][lo:hi],
-                        # Shards store tetrahedra offset into the shard; make
-                        # them local again so a sample stands on its own.
-                        tetrahedra=data["tetrahedra"][tlo:thi] - lo,
-                        tau=float(data["tau"][i]),
-                        # A sweep written before the target changed has no
-                        # tau_peak; its tau *was* the peak.
-                        tau_peak=float(
-                            data["tau_peak"][i]
-                            if "tau_peak" in data.files
-                            else data["tau"][i]
-                        ),
-                        peak=float(data["peak"][i]),
-                        poisson=float(data["poisson"][i]),
-                        force_n=float(data["force_n"][i]),
-                        length_mm=float(data["length_mm"][i]),
-                    )
+                tau = data["tau"]
+                tau_peak = data["tau_peak"] if "tau_peak" in data.files else tau
+                peak = data["peak"]
+                poisson = data["poisson"]
+                force_n = data["force_n"]
+                length_mm = data["length_mm"]
+                family = data["family"]
+
+            for i in range(len(tau)):
+                lo, hi = node_offsets[i], node_offsets[i + 1]
+                yield SweptSample(
+                    family=str(family[i]),
+                    x=x_all[lo:hi],
+                    y_nodal=y_all[lo:hi],
+                    # Shards store tetrahedra offset into the shard; make them
+                    # local again so a sample stands on its own.
+                    tetrahedra=tet_all[tet_offsets[i]:tet_offsets[i + 1]] - lo,
+                    tau=float(tau[i]),
+                    tau_peak=float(tau_peak[i]),
+                    peak=float(peak[i]),
+                    poisson=float(poisson[i]),
+                    force_n=float(force_n[i]),
+                    length_mm=float(length_mm[i]),
+                )
 
     def taus(self) -> np.ndarray:
         """Every target, cheaply, without materialising the meshes."""
