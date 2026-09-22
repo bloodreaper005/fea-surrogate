@@ -77,6 +77,7 @@ def _one(family_name: str, seed: int) -> dict | None:
             "length_mm": float(meshed.characteristic_length_mm),
             "truth_mpa": truth,
             "peak_mpa": float(result.peak_von_mises),
+            "poisson": float(meshed.sample.poisson_ratio),
             "nodes": int(len(meshed.vertices)),
         }
     except Exception:
@@ -135,6 +136,9 @@ def main() -> None:
                 force_n=row["force_n"],
                 family=row["family"],
                 characteristic_length_mm=row["length_mm"],
+                # The sweep drew this per sample; screening with a default
+                # would measure a part the solver never solved.
+                poisson_ratio=row["poisson"],
             )
         except Exception as exc:
             rows.append({**row, "error": f"{type(exc).__name__}: {exc}"})

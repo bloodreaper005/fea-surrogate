@@ -193,7 +193,9 @@ def screen_step(
     load_direction: list[float] | None = None,
     characteristic_length_mm: float | None = None,
     neighbours: Any = None,
-    poisson_ratio: float = 0.35,
+    # Matches `build_graph`'s own default. Changing it here would move every
+    # existing caller's answer silently, because Poisson is a feature column.
+    poisson_ratio: float = 0.3,
 ) -> dict[str, Any]:
     """Screen one STEP file and return a document the consumer will accept.
 

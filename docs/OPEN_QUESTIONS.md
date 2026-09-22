@@ -111,6 +111,48 @@ improves on SFEM's ×/÷ 19.75 at all.
 
 ---
 
+## 6. Re-sweep and retrain the spring family?
+
+**The question.** `addPipe` left its profile face in the model, so every swept
+spring carried a duplicated end face — 24 nodes on the cap and 25 more on an
+orphan 0.044 mm away, sharing none. Real CAD has no such thing, so the shipped
+weights were fitted on a part that cannot arrive through the front door. Fed
+sweep-path features the model scores 1.02 on springs; fed a STEP of the same
+spring, 0.006.
+
+**Why it is not mine to settle.** The geometry is already fixed, but clearing it
+properly means regenerating 500 spring samples and retraining. That invalidates
+`calibration.set_sha256`, so the dataset digest, the published Hugging Face
+dataset and every band move together. It is a release, not a patch.
+
+**What would settle it.** Whether springs are a family you need screened at all.
+If they are not, deleting the family is cheaper and more honest than carrying a
+sixth of the training set that nothing uses.
+
+**Until then.** `spring` is in `predict.UNTRANSFERABLE_FAMILIES` and refused at
+screening time. Reporting an estimate a hundred times below the solved value
+would be much worse than reporting nothing. See
+[DEPLOYED_COVERAGE.md](DEPLOYED_COVERAGE.md).
+
+---
+
+## 7. Is bracket's 0.83 worth chasing?
+
+**The question.** After the selector repair five families sit at or near 0.90.
+Bracket sits at 0.83 on n=100, where the standard error is 0.030 — about two
+standard errors low, which is suggestive rather than damning.
+
+**Why it is not mine to settle.** Chasing it means either more calibration data
+or a closer look at how bracket geometry is drawn, and neither is worth doing
+unless the band matters for a decision you are actually making.
+
+**What would settle it.** A second independent 100-part run. If it comes back
+at 0.83 again, it is real.
+
+**Until then.** Reported as measured, not rounded up to nominal.
+
+---
+
 ## Answered
 
 ### Should the load-case image travel inside the document? — **no, it stays here**
