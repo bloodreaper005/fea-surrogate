@@ -27,7 +27,34 @@ it is refused rather than silently extrapolated.
 
 ---
 
-## 2. Should displacement be a second head?
+## 2. Should `sweep/v2` get a nodal head at all?
+
+**The question.** `PeakGNN` pools the whole graph into one scalar. There is no
+per-node quantity anywhere in it, so **contour plots are not currently possible**
+— and contours were the original ask. `render.py` refuses rather than painting
+the pooled value across every node, because a uniform plot of one number is
+indistinguishable from a prediction at a glance.
+
+**Why it is not mine to settle.** It costs a training run and it weakens a claim.
+The pooled head exists for a reason recorded in `model.py`: a maximum over noisy
+per-node estimates is a worse estimator of the peak than pooling the whole graph,
+and the peak is the scalar the schema carries. A nodal head trades some of that
+accuracy for a field. Whether the picture is worth the number is your call.
+
+**What would settle it.** Whether you would act on a contour or look at one. If
+looking, `render_load_case` already draws the inputs and may be enough; if
+acting, the field needs both a head and per-node conformal bands, which is
+CW-adaptive split-CP rather than the scalar Mondrian bands in use now.
+
+**What it would cost.** No new data. Every shard already carries `y_nodal`, so
+this is a training run against data on disk, not another sweep.
+
+**Until then.** Scalar only, and the renderer refuses a field rather than
+inventing one.
+
+---
+
+## 3. Should displacement be a second head?
 
 **The question.** You asked early on for deformation contours alongside von
 Mises. The solver computes displacement already; it simply is not a label.
@@ -41,12 +68,16 @@ works.
 **What would settle it.** Whether a deformation plot is something you would act
 on, or something you would look at. If the former, it needs an anchor first.
 
+**Sits behind question 2.** Displacement is a second field, and there is not yet
+a first one. Answering this before the nodal-head question is answered gets the
+order wrong.
+
 **Until then.** Stress only. The displacement is computed and discarded, so
 adding it later costs a re-sweep and nothing else.
 
 ---
 
-## 3. How much variation in load pattern?
+## 4. How much variation in load pattern?
 
 **The question.** Each family applies one uniform traction over a fixed set of
 faces. Real parts see distributed pressure, contact patches, and loads that move.
@@ -64,7 +95,7 @@ features — already the thing SFEM omitted.
 
 ---
 
-## 4. When is the dataset big enough?
+## 5. When is the dataset big enough?
 
 **The question.** 3000 samples is a guess. The honest answer is whatever makes
 the conformal band stop narrowing.
@@ -81,6 +112,23 @@ improves on SFEM's ×/÷ 19.75 at all.
 ---
 
 ## Answered
+
+### Should the load-case image travel inside the document? — **no, it stays here**
+
+`SurrogateScreening/v1` refuses unknown top-level keys, and a `fields[]` entry
+requires a per-node interval because it describes a *predicted field*. A load
+case is an input, not a prediction, so it fits neither. The options were to
+widen the schema on both sides or to keep the image local.
+
+Answered by the person who owns both: the two are independent agents. The
+contract carries what the consumer enforces on arrival and nothing else, and
+`render_load_case` writes the diagram next to the screened STEP for whoever is
+looking at the part.
+
+*Left open by this:* nothing in the contract. If a consumer ever needs the
+diagram programmatically rather than a person needing it visually, this is worth
+reopening -- but a visual check is exactly what it is for.
+
 
 ### One regression head, or a family embedding? — **one head, calibrated per family**
 

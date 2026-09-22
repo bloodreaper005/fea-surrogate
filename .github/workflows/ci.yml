@@ -1,0 +1,99 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The boundary job. `screening.py` is the contract with CAD Agent and claims
+  # to be checkable without torch or a mesher; this installs nothing but the
+  # base dependencies and holds it to that. It is also the job that stays green
+  # in seconds when the model stack is broken, which is when the contract is
+  # most worth being able to check.
+  contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install base dependencies only
+        run: |
+          uv venv --python 3.12
+          uv pip install -e . pytest
+
+      - name: Refuse to continue if the model stack leaked into the base install
+        run: |
+          uv run python - <<'PY'
+          import importlib.util, sys
+          leaked = [
+              name
+              for name in ("torch", "gmsh", "scipy", "matplotlib", "torch_geometric")
+              if importlib.util.find_spec(name) is not None
+          ]
+          if leaked:
+              sys.exit(
+                  "these belong to the inference/render extras but are present "
+                  f"in the base install: {leaked}. The contract modules are "
+                  "supposed to be usable without them, and this job can no "
+                  "longer prove that."
+              )
+          print("base install is clean")
+          PY
+
+      - name: Run what does not need a model
+        # Everything else skips itself through importorskip. A skip here is the
+        # correct outcome, not a gap: the full job below runs those.
+        run: uv run pytest tests -q
+
+  # Everything, with the model stack present. Ubuntu only: the risk in this
+  # package is the dependency set, not the platform, and the contract job
+  # already covers macOS.
+  full:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install the libraries gmsh's wheel links against
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libglu1-mesa libxrender1 libxcursor1 libxinerama1 libxft2
+
+      - name: Install with the inference and render extras
+        # CPU torch explicitly. The default index pulls the CUDA build, which is
+        # several gigabytes and buys a CPU runner nothing.
+        run: |
+          uv venv --python 3.12
+          uv pip install --index-url https://download.pytorch.org/whl/cpu torch
+          uv pip install -e ".[inference,render]" pytest
+
+      - name: Run the whole suite
+        run: uv run pytest tests -q
+
+      - name: Confirm nothing skipped silently
+        # A dependency that fails to install turns the suite green by skipping,
+        # which is the failure mode this job exists to catch.
+        run: |
+          uv run pytest tests -q -rs 2>&1 | tee result.txt
+          if grep -q "skipped" result.txt; then
+            echo "::error::a test skipped in the full job; the extras did not install"
+            grep -i "skip" result.txt
+            exit 1
+          fi
