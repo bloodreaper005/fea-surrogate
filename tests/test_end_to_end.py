@@ -182,3 +182,45 @@ def test_the_gate_admits_steel_and_refuses_ceramic(parts, surrogate) -> None:
     ceramic = evaluate_domain(domain, query(0.22))             # outside the sweep
     assert not ceramic.in_domain
     assert ceramic.violations[0]["key"] == "poisson_ratio"
+
+
+def test_edges_come_from_tetrahedra_not_the_surface(parts) -> None:
+    """The defect a trained model exposed and an untrained one could not.
+
+    FaceToEdge connects only surface triangles. On a 3D mesh that leaves every
+    interior node isolated — 43% of a bracket's nodes had degree zero — so
+    message passing could not reach them and the prediction was out by a factor
+    of twenty. Shapes were valid throughout, which is why only real weights
+    caught it.
+    """
+    import torch
+
+    from fea_surrogate.features import build_graph, mesh_step
+    from fea_surrogate.selectors import FAMILY_PRESETS, select
+
+    mesh = mesh_step(parts["step"])
+    preset = FAMILY_PRESETS["bracket"]
+    graph = build_graph(
+        mesh,
+        fixed_vertices=select(preset["fixed"], mesh.vertices, "fixed"),
+        loaded_vertices=select(preset["loaded"], mesh.vertices, "loaded"),
+        load_direction=tuple(preset["direction"]),
+    )
+
+    n = graph.x.shape[0]
+    degree = torch.zeros(n, dtype=torch.long)
+    degree.scatter_add_(
+        0, graph.edge_index[0], torch.ones(graph.edge_index.shape[1], dtype=torch.long)
+    )
+
+    assert int((degree == 0).sum()) == 0, "interior nodes are isolated"
+    # A tetrahedral mesh gives about 12 directed edges per node; a surface-only
+    # graph over the same nodes gives about 3.
+    assert graph.edge_index.shape[1] / n > 8.0
+
+
+def test_the_mesh_carries_tetrahedra_for_the_swept_version(parts) -> None:
+    from fea_surrogate.features import SFEM_V1, mesh_step
+
+    assert mesh_step(parts["step"]).tetrahedra is not None
+    assert mesh_step(parts["step"], version=SFEM_V1).tetrahedra is None

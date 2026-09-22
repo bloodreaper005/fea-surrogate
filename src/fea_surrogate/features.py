@@ -51,10 +51,11 @@ class MeshingError(RuntimeError):
 
 @dataclass(frozen=True)
 class ScaledMesh:
-    vertices: np.ndarray        # (N, 3)
-    faces: np.ndarray           # (3, F)
+    vertices: np.ndarray            # (N, 3)
+    faces: np.ndarray               # (3, F) surface triangles
     scale: float
     original_diagonal: float
+    tetrahedra: np.ndarray | None = None   # (M, 4); sweep/v2 only
 
 
 def mesh_step(path: str | Path, *, version: str = DEFAULT_VERSION) -> ScaledMesh:
@@ -124,6 +125,18 @@ def mesh_step(path: str | Path, *, version: str = DEFAULT_VERSION) -> ScaledMesh
         # Transposing leaves a non-contiguous view, and torch_geometric's
         # transforms call .view() on it, which fails on that stride.
         faces = np.ascontiguousarray(np.concatenate(triangles, axis=0).T)
+
+        tetrahedra = None
+        if version != SFEM_V1:
+            tet_types, _, tet_nodes = gmsh.model.mesh.getElements(dim=3)
+            blocks = [
+                np.array([index[int(n)] for n in nodes], dtype=np.int64).reshape(-1, 4)
+                for etype, nodes in zip(tet_types, tet_nodes)
+                if int(etype) == 4
+            ]
+            if not blocks:
+                raise MeshingError("meshing produced no tetrahedra")
+            tetrahedra = np.concatenate(blocks, axis=0)
     finally:
         gmsh.finalize()
 
@@ -137,6 +150,7 @@ def mesh_step(path: str | Path, *, version: str = DEFAULT_VERSION) -> ScaledMesh
         faces=faces,
         scale=scale,
         original_diagonal=diagonal,
+        tetrahedra=tetrahedra,
     )
 
 
@@ -165,6 +179,17 @@ def _sdf_own_box(pos: torch.Tensor) -> torch.Tensor:
     return (-inner / diagonal).unsqueeze(1)
 
 
+_TET_PAIRS = np.array([(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)], dtype=np.int64)
+
+
+def _tet_edges(tetrahedra: np.ndarray, node_count: int) -> np.ndarray:
+    """Undirected edges of a tetrahedral mesh, deduplicated. (2, E)."""
+    pairs = np.sort(tetrahedra[:, _TET_PAIRS].reshape(-1, 2), axis=1)
+    key = np.unique(pairs[:, 0].astype(np.int64) * node_count + pairs[:, 1])
+    lo, hi = key // node_count, key % node_count
+    return np.stack([np.concatenate([lo, hi]), np.concatenate([hi, lo])])
+
+
 def nearest_load_class(force_n: float) -> tuple[int, float]:
     """sfem/v1 only. Index of the closest trained load class."""
     i = int(np.argmin([abs(np.log(force_n) - np.log(c)) for c in LOAD_CLASSES_N]))
@@ -188,6 +213,16 @@ def build_graph(
     data = Data(pos=pos, face=torch.from_numpy(mesh.faces).long())
     data = Compose([FaceToEdge(remove_faces=False), GenerateMeshNormals()])(data)
     n = pos.shape[0]
+
+    if version != SFEM_V1:
+        # Edges must come from the tetrahedra, as the sweep builds them.
+        # FaceToEdge connects only surface triangles, which leaves every
+        # interior node isolated: 43% of a bracket's nodes had degree zero,
+        # message passing could not reach them, and the prediction was out by
+        # a factor of twenty.
+        if mesh.tetrahedra is None:
+            raise FeatureVersionError(f"{version} needs a tetrahedral mesh")
+        data.edge_index = torch.from_numpy(_tet_edges(mesh.tetrahedra, n)).long()
 
     if fixed_vertices is None:
         raise ValueError(
