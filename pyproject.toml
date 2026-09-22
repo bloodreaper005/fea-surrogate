@@ -19,6 +19,12 @@ inference = [
     "gmsh>=4.12",
     "scipy>=1.11",
 ]
+# Rendering only. Separate from `inference` because drawing a field needs no
+# model: a consumer inspecting stored values and bands should not pull torch in
+# to look at them.
+render = [
+    "matplotlib>=3.8",
+]
 
 [dependency-groups]
 test = ["pytest>=8.3"]
