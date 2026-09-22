@@ -30,6 +30,7 @@ from .face_selectors import (
     face_mask,
     select_faces,
 )
+from .neighbours import describe
 from .selectors import resolve, select
 from .screening import (
     Calibration,
@@ -191,6 +192,8 @@ def screen_step(
     loaded: dict[str, Any] | None = None,
     load_direction: list[float] | None = None,
     characteristic_length_mm: float | None = None,
+    neighbours: Any = None,
+    poisson_ratio: float = 0.35,
 ) -> dict[str, Any]:
     """Screen one STEP file and return a document the consumer will accept.
 
@@ -230,6 +233,7 @@ def screen_step(
         loaded_vertices=loaded_mask,
         load_direction=tuple(direction),
         force_n=force_n,
+        poisson_ratio=poisson_ratio,
     )
     tau = surrogate.peak_tau(data)
     calibration = surrogate.calibration.for_family(family)
@@ -307,6 +311,25 @@ def screen_step(
         *(f"{key}: {value}" for key, value in sorted(provenance.items())),
     ]
 
+    # Retrieval travels in the assumptions and limitations, not in a key of its
+    # own: the consumer refuses an unrecognised top-level field, and a neighbour
+    # list is context for reading the interval rather than part of the contract.
+    extra_limitations: list[str] = []
+    if neighbours is not None:
+        try:
+            found = neighbours.query(
+                describe(data.x.numpy(), mesh.tetrahedra), k=5
+            )
+        except Exception as exc:       # retrieval must never break a screening
+            assumptions.append(f"nearest-neighbour retrieval unavailable: {exc}")
+        else:
+            notes = found.notes(factor)
+            if found.extrapolating and len(notes) > 1:
+                assumptions.append(notes[0])
+                extra_limitations.append(notes[1])
+            else:
+                assumptions.extend(notes)
+
     return build_document(
         screened_sha256=file_sha256(step_path),
         model_name=surrogate.model_name,
@@ -323,8 +346,11 @@ def screen_step(
             )
         ],
         assumptions=assumptions,
-        limitations=surrogate.limitations
-        or ["screening estimate, not a strength certification"],
+        limitations=(
+            list(surrogate.limitations)
+            or ["screening estimate, not a strength certification"]
+        )
+        + extra_limitations,
     )
 
 

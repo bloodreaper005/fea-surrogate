@@ -175,13 +175,35 @@ class Similarity:
             ],
         }
 
-    def notes(self) -> list[str]:
+    def notes(self, factor: float | None = None) -> list[str]:
+        """`factor` is the query's F/L^2, which makes the numbers comparable.
+
+        A neighbour's own solved stress is not: it carried a different force at
+        a different size, so the five nearest parts to one bracket spanned 24 to
+        4767 MPa and told the reader nothing. The dimensionless target is what
+        transfers, so each neighbour's tau is converted at the *query's* scale
+        and the reader sees what that part would have measured under this load.
+        """
         if not self.neighbours:
             return []
-        resembles = ", ".join(
-            f"{n.family}-{n.index} ({n.stress_mpa:.4g} MPa)" for n in self.neighbours
-        )
-        out = [f"nearest training parts, with their solved stresses: {resembles}"]
+        if factor is None:
+            resembles = ", ".join(
+                f"{n.family}-{n.index} (tau {n.tau:.4g})" for n in self.neighbours
+            )
+            lead = (
+                "nearest training parts, as dimensionless tau (no query scale "
+                f"given to convert them): {resembles}"
+            )
+        else:
+            resembles = ", ".join(
+                f"{n.family}-{n.index} ({n.tau * factor:.4g} MPa)"
+                for n in self.neighbours
+            )
+            lead = (
+                "nearest training parts, solved, rescaled to this part's load "
+                f"and size: {resembles}"
+            )
+        out = [lead]
         if self.extrapolating:
             out.append(
                 f"the nearest training part is {self.nearest_distance:.2f} away "

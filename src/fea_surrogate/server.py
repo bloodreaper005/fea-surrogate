@@ -1,9 +1,14 @@
 """MCP server exposing the surrogate to a coding agent.
 
-Two tools, deliberately. `surrogate_status` says whether a model is loaded and
-what it claims about itself; `surrogate_screen_step` returns one
-`SurrogateScreening/v1` document. Everything else belongs on the consumer side,
-which already decides whether a document is admissible.
+Four tools. `surrogate_status` says whether a model is loaded and what it claims
+about itself. `surrogate_inspect_cad` reads a CAD file and lists its faces, so a
+load case can name them the way a pre-processor lets you click them.
+`surrogate_screen` takes that load case and returns one `SurrogateScreening/v1`
+document; `surrogate_screen_step` is the older, looser entry point, kept so
+anything already wired to it keeps working.
+
+Everything else belongs on the consumer side, which already decides whether a
+document is admissible.
 
 The model loads lazily so the server starts, and reports honestly, with no
 weights present.
@@ -21,6 +26,9 @@ from typing import Any, Callable
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
+from .cad_intake import inspect, summarise
+from .load_case import parse as parse_load_case, propose
+from .neighbours import NeighbourIndex
 from .predict import Surrogate, screen_step
 from .versions import FEATURE_COLUMNS, LAYOUTS, PROVENANCE
 from .screening import ScreeningContractError
@@ -28,6 +36,9 @@ from .screening import ScreeningContractError
 
 WEIGHTS_ENV = "FEA_SURROGATE_WEIGHTS"
 CALIBRATION_ENV = "FEA_SURROGATE_CALIBRATION"
+#: Optional. Absent, screening still works and simply says nothing about what
+#: the part resembles.
+NEIGHBOURS_ENV = "FEA_SURROGATE_NEIGHBOURS"
 
 
 def _json(value: object) -> str:
@@ -54,7 +65,23 @@ def _tool_call(call: Callable[[], Any]) -> str:
 def create_mcp(*, surrogate: Surrogate | None = None) -> FastMCP:
     mcp = FastMCP("fea-surrogate")
     loaded = surrogate
+    index: NeighbourIndex | None = None
+    index_tried = False
     lock = Lock()
+
+    def neighbours() -> NeighbourIndex | None:
+        """The retrieval index, if one is configured. Never fatal."""
+        nonlocal index, index_tried
+        if index_tried:
+            return index
+        index_tried = True
+        path = os.environ.get(NEIGHBOURS_ENV, "")
+        if path:
+            try:
+                index = NeighbourIndex.load(path)
+            except Exception:
+                index = None
+        return index
 
     def paths() -> tuple[Path, Path]:
         weights = os.environ.get(WEIGHTS_ENV, "")
@@ -107,6 +134,66 @@ def create_mcp(*, surrogate: Surrogate | None = None) -> FastMCP:
 
         return _tool_call(build)
 
+
+    @mcp.tool()
+    def surrogate_inspect_cad(path: str) -> str:
+        """List a CAD file's faces so a load case can name them.
+
+        Reads BREP, STEP and IGES. Parasolid and native CAD formats need a
+        licensed kernel OpenCASCADE does not have, and are refused by name.
+
+        Returns the faces with area, centroid, normal and whether each is
+        planar; a proposed load case; and what still has to be answered. The
+        proposal is a starting point, not an answer -- holding the wrong face
+        screens a different question and the result looks perfectly healthy.
+        """
+
+        def build() -> dict[str, Any]:
+            solid = inspect(path)
+            return {
+                "schema_version": "FeaSurrogateCad/v1",
+                "path": path,
+                **solid.as_dict(),
+                "summary": list(summarise(solid)),
+                **propose(solid),
+            }
+
+        return _tool_call(build)
+
+    @mcp.tool()
+    def surrogate_screen(path: str, load_case_json: str, family: str = "") -> str:
+        """Screen a part under a stated load case.
+
+        `load_case_json` names held faces, the load and the material, in the
+        shape `surrogate_inspect_cad` proposes. A load case with no held faces
+        is refused rather than defaulted: an unconstrained body has rigid-body
+        freedom and no stress solution.
+
+        A screening estimate, never evidence. It cannot complete, block or
+        confirm a design.
+        """
+
+        def build() -> dict[str, Any]:
+            solid = inspect(path)
+            case = parse_load_case(json.loads(load_case_json), solid)
+            document = screen_step(
+                get(),
+                path,
+                force_n=case.load.magnitude_n,
+                family=family or None,
+                fixed=dict(case.fixed),
+                loaded=dict(case.loaded),
+                load_direction=list(case.load.direction),
+                poisson_ratio=case.poisson_ratio,
+                neighbours=neighbours(),
+            )
+            document["assumptions"] = (
+                list(document["assumptions"]) + case.assumptions()
+            )
+            return document
+
+        return _tool_call(build)
+
     @mcp.tool()
     def surrogate_screen_step(
         step_path: str,
@@ -148,6 +235,7 @@ def create_mcp(*, surrogate: Surrogate | None = None) -> FastMCP:
                 characteristic_length_mm=(
                     characteristic_length_mm if characteristic_length_mm > 0 else None
                 ),
+                neighbours=neighbours(),
             )
         )
 

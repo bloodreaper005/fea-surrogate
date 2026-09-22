@@ -142,13 +142,33 @@ def test_a_far_away_part_is_flagged_as_extrapolating_but_not_refused() -> None:
     assert any("extrapolating" in note for note in found.notes())
 
 
-def test_the_notes_name_the_parts_and_their_stresses() -> None:
-    samples = [_Sample("box", *_cube_mesh(seed=i), tau=100.0) for i in range(12)]
+def test_the_notes_rescale_each_neighbour_to_the_query() -> None:
+    """A neighbour's own stress is not comparable: different force, different size.
+
+    Five parts near one bracket spanned 24 to 4767 MPa against a prediction of
+    418 to 794, which told the reader nothing. tau is what transfers, so it is
+    converted at the query's scale.
+    """
+    samples = [_Sample("box", *_cube_mesh(seed=i), tau=4.0) for i in range(12)]
+    index = NeighbourIndex.build(samples)
+    found = index.query(describe(*_cube_mesh(seed=3)), k=2)
+
+    # factor = F / L^2; tau 4.0 at factor 250 is 1000 MPa under this load.
+    notes = found.notes(factor=250.0)
+
+    assert "1000 MPa" in notes[0]
+    assert "rescaled to this part's load" in notes[0]
+
+
+def test_without_a_query_scale_the_notes_report_dimensionless_tau() -> None:
+    """Better an honest tau than a stress from some other part's load."""
+    samples = [_Sample("box", *_cube_mesh(seed=i), tau=4.0) for i in range(12)]
     index = NeighbourIndex.build(samples)
 
     notes = index.query(describe(*_cube_mesh(seed=3)), k=2).notes()
 
-    assert notes and "MPa" in notes[0]
+    assert "tau 4" in notes[0]
+    assert "MPa" not in notes[0]
 
 
 def test_an_index_round_trips_through_disk(tmp_path) -> None:
