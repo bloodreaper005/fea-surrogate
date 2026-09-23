@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -213,3 +214,71 @@ def test_screening_works_with_no_retrieval_index_configured(tmp_path, monkeypatc
     )
 
     assert out["predictions"]
+
+
+def test_solving_returns_the_true_field_and_says_it_is_not_an_estimate(
+    tmp_path, monkeypatch
+) -> None:
+    """The solve is a different kind of thing from the screen, and says so."""
+    monkeypatch.setenv("FEA_SURROGATE_OUTPUT_DIR", str(tmp_path / "out"))
+    mcp = create_mcp(surrogate=_surrogate(tmp_path))
+    path = str(_box(tmp_path))
+    faces = _call(mcp, "surrogate_inspect_cad", {"path": path})["faces"]
+    held = [f["tag"] for f in faces if f["normal"][0] < -0.9]
+    pushed = [f["tag"] for f in faces if f["normal"][0] > 0.9]
+
+    out = _call(
+        mcp,
+        "surrogate_solve",
+        {"path": path, "load_case_json": _case(held, pushed)},
+    )
+
+    assert out["schema_version"] == "FeaSolve/v1"
+    assert out["attestation"] == "computed_analysis"
+    assert out["critical_distance_mpa"] > 0.0
+    # The peak is singular at a re-entrant corner; the summary must say which
+    # number to use rather than leaving a reader to pick the bigger one.
+    assert "critical_distance_mpa" in out["use"]
+    assert out["critical_distance_mpa"] <= out["peak_von_mises_mpa"]
+    assert (Path(out["output_dir"]) / out["image_relative_path"]).exists()
+
+
+def test_a_solve_records_whether_the_screening_interval_held(
+    tmp_path, monkeypatch
+) -> None:
+    """Every solve is a coverage datapoint on a part someone cared about."""
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("FEA_SURROGATE_OUTPUT_DIR", str(out_dir))
+    mcp = create_mcp(surrogate=_surrogate(tmp_path))
+    path = str(_box(tmp_path))
+    faces = _call(mcp, "surrogate_inspect_cad", {"path": path})["faces"]
+
+    out = _call(
+        mcp,
+        "surrogate_solve",
+        {
+            "path": path,
+            "load_case_json": _case(
+                [f["tag"] for f in faces if f["normal"][0] < -0.9],
+                [f["tag"] for f in faces if f["normal"][0] > 0.9],
+            ),
+            "family": "bracket",
+        },
+    )
+
+    crosscheck = out["crosscheck"]
+    assert crosscheck["available"]
+    assert crosscheck["solved"] == pytest.approx(out["critical_distance_mpa"])
+    assert isinstance(crosscheck["inside"], bool)
+    assert (out_dir / "crosschecks.jsonl").exists()
+
+
+def test_inspecting_a_part_also_draws_its_faces(tmp_path, monkeypatch) -> None:
+    """Asking which face is held is answerable by pointing, or it is guesswork."""
+    monkeypatch.setenv("FEA_SURROGATE_OUTPUT_DIR", str(tmp_path / "out"))
+    mcp = create_mcp(surrogate=_surrogate(tmp_path))
+
+    out = _call(mcp, "surrogate_inspect_cad", {"path": str(_box(tmp_path))})
+
+    assert "faces_image_error" not in out
+    assert (Path(out["output_dir"]) / out["faces_image_relative_path"]).exists()

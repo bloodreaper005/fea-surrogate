@@ -195,14 +195,14 @@ def create_mcp(*, surrogate: Surrogate | None = None) -> FastMCP:
                     if os.environ.get(OUTPUT_ENV)
                     else Path(path).resolve().parent
                 )
-                out["faces_image_relative_path"] = str(
-                    render_faces(
-                        solid,
-                        mesh_step(path),
-                        out_dir=directory,
-                        stem=f"{Path(path).stem}_faces",
-                    )
+                image = render_faces(
+                    solid,
+                    mesh_step(path),
+                    out_dir=directory,
+                    stem=f"{Path(path).stem}_faces",
                 )
+                out["output_dir"] = str(directory)
+                out["faces_image_relative_path"] = image.name
             except Exception as exc:
                 out["faces_image_error"] = f"{type(exc).__name__}: {exc}"
             return out
@@ -353,6 +353,9 @@ def create_mcp(*, surrogate: Surrogate | None = None) -> FastMCP:
             return {
                 **solved.as_dict(),
                 **render.as_dict(),
+                # The image and value names are relative to this, the way the
+                # contract's own `*_relative_path` fields are.
+                "output_dir": str(out_dir),
                 "assumptions": case.assumptions(),
                 "crosscheck": crosscheck,
             }
