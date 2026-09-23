@@ -46,6 +46,11 @@ WASHOUT_RELATIVE_HALF_WIDTH = 1.0
 
 #: Sequential, perceptually uniform, and pointedly not the rainbow a solver GUI
 #: defaults to. Looking like a solved plot is the thing being avoided.
+#: Burned into every screening render. Named so a test can assert that a solved
+#: render does not carry them -- the two must never be confusable.
+SCREENING_HEADER = "SCREENING ESTIMATE — NOT AN ANALYSIS"
+SCREENING_WATERMARK = "ESTIMATE"
+
 FIELD_COLORMAP = "cividis"
 WIDTH_COLORMAP = "PuBu"
 
@@ -201,7 +206,7 @@ def _stamp(figure, coverage: float, model_name: str, model_version: str,
     """
     figure.text(
         0.5, 0.965,
-        f"SCREENING ESTIMATE — NOT AN ANALYSIS — {quantity} [{units}]",
+        f"{SCREENING_HEADER} — {quantity} [{units}]",
         ha="center", va="top", fontsize=11, fontweight="bold", color="#8a3324",
     )
     figure.text(
@@ -212,7 +217,7 @@ def _stamp(figure, coverage: float, model_name: str, model_version: str,
         ha="center", va="bottom", fontsize=8, color="#444444",
     )
     figure.text(
-        0.5, 0.5, "ESTIMATE",
+        0.5, 0.5, SCREENING_WATERMARK,
         ha="center", va="center", fontsize=68, color="#000000",
         alpha=0.06, rotation=30, zorder=10, fontweight="bold",
     )
@@ -234,6 +239,7 @@ def render_field(
     out_of_domain: np.ndarray | None = None,
     stem: str = "field",
     dpi: int = 150,
+    fmt: str = "png",
 ) -> FieldArtifacts:
     """Write a predicted field, its per-node interval, and the two-panel image.
 
@@ -285,7 +291,7 @@ def render_field(
     out_dir.mkdir(parents=True, exist_ok=True)
     values_path = out_dir / f"{stem}_values.npy"
     interval_path = out_dir / f"{stem}_interval.npy"
-    image_path = out_dir / f"{stem}.png"
+    image_path = out_dir / f"{stem}.{fmt}"
     np.save(values_path, values)
     # Both edges, not the width: a consumer that wants to compare against a
     # yield strength needs the upper bound itself, and cannot recover it from a
@@ -439,6 +445,105 @@ def render_load_case(
     return image_path
 
 
+def render_faces(
+    solid,  # noqa: ANN001 - cad_intake.Solid
+    mesh,   # noqa: ANN001 - features.ScaledMesh
+    *,
+    out_dir: str | Path,
+    stem: str = "faces",
+    dpi: int = 150,
+    fmt: str = "png",
+) -> Path:
+    """Number the faces on the part, so a person can point at one.
+
+    The interview asks which face is held. A text table of tags, areas and
+    centroids answers that in principle and badly in practice -- nobody holds a
+    centroid in their head. This is the picture a pre-processor would give you,
+    and it is the difference between the interview being answerable and being
+    guessed at.
+
+    Drawn translucent for the same reason `render_load_case` is: matplotlib's 3D
+    compositing hides every face pointing away from the camera, and on an
+    L-bracket that is most of them.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib import colormaps
+
+    if not mesh.face_nodes:
+        raise ScreeningContractError(
+            "this mesh carries no face-to-node map; it cannot be drawn by face"
+        )
+
+    vertices = np.asarray(mesh.vertices, dtype=float)
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    if faces.ndim == 2 and faces.shape[0] == 3 and faces.shape[1] != 3:
+        faces = faces.T
+
+    # Which CAD face does each surface triangle belong to? By majority of its
+    # three nodes, since a triangle on a shared edge touches two faces.
+    owner = np.full(vertices.shape[0], -1, dtype=np.int64)
+    tags = sorted(mesh.face_nodes)
+    # Largest first, so a small face painted after a big one keeps its colour on
+    # the shared edge rather than being overwritten by its neighbour.
+    for order, tag in enumerate(sorted(tags, key=lambda t: -len(mesh.face_nodes[t]))):
+        owner[mesh.face_nodes[tag]] = order
+    triangle_owner = np.array(
+        [np.bincount(owner[tri][owner[tri] >= 0], minlength=len(tags)).argmax()
+         if (owner[tri] >= 0).any() else 0
+         for tri in faces],
+        dtype=np.int64,
+    )
+    palette = colormaps["tab20"](np.linspace(0.0, 1.0, max(len(tags), 2)))
+    colours = palette[triangle_owner % len(palette)]
+    colours[:, 3] = 0.55
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    image_path = out_dir / f"{stem}.{fmt}"
+
+    # Float each label just off its own face, along that face's normal. Placed
+    # at the centroid instead, the two faces of a thin plate land on the same
+    # screen position and their numbers sit on top of each other -- on an
+    # L-bracket, 1 over 8 and 7 over 4, which is worse than no label at all.
+    diagonal = float(np.linalg.norm(vertices.max(axis=0) - vertices.min(axis=0)))
+    lift = diagonal * 0.06
+    labelled = [f for f in solid.faces if f.tag in mesh.face_nodes]
+    anchors = np.array([f.centroid for f in labelled], dtype=float)
+    normals = np.array([f.normal for f in labelled], dtype=float)
+    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+    normals = np.divide(normals, np.where(lengths > 0, lengths, 1.0))
+    tips = anchors + normals * lift
+
+    figure = plt.figure(figsize=(7.0, 6.0))
+    figure.patch.set_facecolor("#f4f2ee")
+    axis = figure.add_subplot(1, 1, 1, projection="3d")
+    axis.set_facecolor("#f4f2ee")
+    _draw_surface(axis, vertices, faces, colours,
+                  np.zeros(faces.shape[0], dtype=bool), include=tips)
+
+    for face, anchor, tip in zip(labelled, anchors, tips):
+        # A leader line, so a lifted number still says which face it belongs to.
+        axis.plot(*zip(anchor, tip), color="#555555", linewidth=0.7, zorder=11)
+        axis.text(*tip, str(face.tag), fontsize=11, fontweight="bold",
+                  color="#111111", ha="center", va="center", zorder=12,
+                  bbox=dict(boxstyle="round,pad=0.18", facecolor="#ffffff",
+                            edgecolor="#555555", linewidth=0.5, alpha=0.9))
+
+    figure.text(0.5, 0.965, "FACES — name one to hold it or load it",
+                ha="center", va="top", fontsize=11, fontweight="bold",
+                color="#1f4e79")
+    figure.text(0.5, 0.03,
+                f"{len(solid.faces)} faces · volume {solid.volume:.4g} · "
+                f"numbers match the face table",
+                ha="center", va="bottom", fontsize=8, color="#444444")
+    figure.subplots_adjust(left=0.0, right=1.0, top=0.92, bottom=0.07)
+    figure.savefig(image_path, dpi=dpi, facecolor=figure.get_facecolor())
+    plt.close(figure)
+    return image_path
+
+
 def field_or_refuse(surrogate, data):  # noqa: ANN001
     """Per-node predictions, or a refusal naming why there are none.
 
@@ -465,12 +570,15 @@ def field_or_refuse(surrogate, data):  # noqa: ANN001
 
 __all__ = [
     "FIELD_COLORMAP",
+    "SCREENING_HEADER",
+    "SCREENING_WATERMARK",
     "WASHOUT_RELATIVE_HALF_WIDTH",
     "WIDTH_COLORMAP",
     "FieldArtifacts",
     "FieldNotPredicted",
     "field_or_refuse",
     "mesh_sha256",
+    "render_faces",
     "render_field",
     "render_load_case",
 ]

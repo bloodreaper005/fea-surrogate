@@ -1,11 +1,18 @@
 """MCP server exposing the surrogate to a coding agent.
 
-Four tools. `surrogate_status` says whether a model is loaded and what it claims
+Five tools. `surrogate_status` says whether a model is loaded and what it claims
 about itself. `surrogate_inspect_cad` reads a CAD file and lists its faces, so a
 load case can name them the way a pre-processor lets you click them.
 `surrogate_screen` takes that load case and returns one `SurrogateScreening/v1`
 document; `surrogate_screen_step` is the older, looser entry point, kept so
 anything already wired to it keeps working.
+
+`surrogate_solve` is the other kind of thing entirely. It runs the real solver
+on the part -- 3.5 s against the surrogate's 60 ms on an 11k-node bracket -- and
+returns the true field as a contour. That is not a screening estimate and is
+deliberately not dressed as one: its own schema, its own attestation, its own
+stamp on the image, and nothing stored in the design session. Screening is
+triage that aims an expensive check at the right candidate; this is the check.
 
 Everything else belongs on the consumer side, which already decides whether a
 document is admissible.
@@ -27,7 +34,11 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 from .cad_intake import inspect, summarise
+from .features import mesh_step
+from .render import render_faces
 from .load_case import parse as parse_load_case, propose
+from .render_solved import render_solved
+from .solve_cad import compare_to_screening, estimate_seconds, solve_step
 from .neighbours import NeighbourIndex
 from .predict import Surrogate, screen_step
 from .versions import FEATURE_COLUMNS, LAYOUTS, PROVENANCE
@@ -39,6 +50,8 @@ CALIBRATION_ENV = "FEA_SURROGATE_CALIBRATION"
 #: Optional. Absent, screening still works and simply says nothing about what
 #: the part resembles.
 NEIGHBOURS_ENV = "FEA_SURROGATE_NEIGHBOURS"
+#: Where solved contours and the crosscheck log are written.
+OUTPUT_ENV = "FEA_SURROGATE_OUTPUT_DIR"
 
 
 def _json(value: object) -> str:
@@ -60,6 +73,21 @@ def _tool_call(call: Callable[[], Any]) -> str:
                 }
             )
         ) from None
+
+
+def _log_crosscheck(out_dir: Path, path: str, crosscheck: dict[str, Any]) -> None:
+    """Append one line of real-world coverage evidence.
+
+    A synthetic sweep cannot produce this, however many samples it runs: these
+    are parts someone chose to look at.
+    """
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        line = json.dumps({"part": str(path), **crosscheck}, sort_keys=True)
+        with open(out_dir / "crosschecks.jsonl", "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError:
+        pass        # evidence is worth having, not worth failing a solve over
 
 
 def create_mcp(*, surrogate: Surrogate | None = None) -> FastMCP:
@@ -150,13 +178,34 @@ def create_mcp(*, surrogate: Surrogate | None = None) -> FastMCP:
 
         def build() -> dict[str, Any]:
             solid = inspect(path)
-            return {
+            out: dict[str, Any] = {
                 "schema_version": "FeaSurrogateCad/v1",
                 "path": path,
                 **solid.as_dict(),
                 "summary": list(summarise(solid)),
                 **propose(solid),
             }
+            # A numbered picture, because nobody holds a centroid in their head.
+            # Meshing costs a second or two and is the difference between the
+            # interview being answerable and being guessed at -- but a failure
+            # here must not cost the caller the face table they asked for.
+            try:
+                directory = (
+                    Path(os.environ[OUTPUT_ENV])
+                    if os.environ.get(OUTPUT_ENV)
+                    else Path(path).resolve().parent
+                )
+                out["faces_image_relative_path"] = str(
+                    render_faces(
+                        solid,
+                        mesh_step(path),
+                        out_dir=directory,
+                        stem=f"{Path(path).stem}_faces",
+                    )
+                )
+            except Exception as exc:
+                out["faces_image_error"] = f"{type(exc).__name__}: {exc}"
+            return out
 
         return _tool_call(build)
 
@@ -238,6 +287,77 @@ def create_mcp(*, surrogate: Surrogate | None = None) -> FastMCP:
                 neighbours=neighbours(),
             )
         )
+
+
+    @mcp.tool()
+    def surrogate_solve(
+        path: str,
+        load_case_json: str,
+        family: str = "",
+        allow_large: bool = False,
+    ) -> str:
+        """Solve the part for real and return the true stress field as a contour.
+
+        This is not a screening estimate. It runs the same linear-elastic solver
+        that generated the training labels, on this part, under the stated load
+        case, and returns what it computes -- roughly three seconds for an
+        11,000-node part against sixty milliseconds to screen it.
+
+        The answer is true *to the idealisation*: linear elastic, small
+        displacement, first-order tetrahedra, one uniform traction, no contact
+        and no body loads. That is a much stronger claim than a screening
+        interval and still not a strength certification.
+
+        Use `critical_distance_mpa`, not the peak. An elastic peak at a
+        re-entrant corner is singular and rises without bound as the mesh is
+        refined, so it states the mesh rather than the part.
+
+        Where a model is loaded, the same part is also screened and the result
+        says whether the screening interval contained the solved answer.
+        """
+
+        def build() -> dict[str, Any]:
+            out_dir = Path(os.environ.get(OUTPUT_ENV, "")) if os.environ.get(
+                OUTPUT_ENV
+            ) else Path(path).resolve().parent
+            solid = inspect(path)
+            case = parse_load_case(json.loads(load_case_json), solid)
+            solved = solve_step(path, case, allow_large=allow_large)
+            render = render_solved(
+                solved, out_dir=out_dir, stem=f"{Path(path).stem}_solved"
+            )
+
+            # Screen the same part, so every solve is a real coverage datapoint
+            # -- measured on something someone cared about rather than on
+            # geometry this project generated. Never fatal: a missing model must
+            # not cost you the solve you just waited for.
+            document = None
+            try:
+                document = screen_step(
+                    get(),
+                    path,
+                    force_n=case.load.magnitude_n,
+                    family=family or None,
+                    fixed=dict(case.fixed),
+                    loaded=dict(case.loaded),
+                    load_direction=list(case.load.direction),
+                    poisson_ratio=case.poisson_ratio,
+                )
+            except Exception:
+                document = None
+
+            crosscheck = compare_to_screening(solved, document)
+            if crosscheck.get("available"):
+                _log_crosscheck(out_dir, path, crosscheck)
+
+            return {
+                **solved.as_dict(),
+                **render.as_dict(),
+                "assumptions": case.assumptions(),
+                "crosscheck": crosscheck,
+            }
+
+        return _tool_call(build)
 
     return mcp
 

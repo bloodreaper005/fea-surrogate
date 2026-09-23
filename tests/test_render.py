@@ -220,3 +220,79 @@ def test_the_load_case_drawing_marks_both_ends_of_the_problem(tmp_path) -> None:
     )
 
     assert path.read_bytes().startswith(PNG_MAGIC)
+
+
+def test_every_face_is_numbered_on_the_picture(tmp_path) -> None:
+    """The interview asks which face is held; nobody holds a centroid in their head."""
+    gmsh = pytest.importorskip("gmsh", reason="needs the inference extra")
+    pytest.importorskip("torch", reason="mesh_step imports torch_geometric")
+
+    from fea_surrogate.cad_intake import inspect
+    from fea_surrogate.features import mesh_step
+    from fea_surrogate.render import render_faces
+
+    step = tmp_path / "box.step"
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("box")
+        gmsh.model.occ.addBox(0.0, 0.0, 0.0, 60.0, 30.0, 8.0)
+        gmsh.model.occ.synchronize()
+        gmsh.write(str(step))
+    finally:
+        gmsh.finalize()
+
+    solid = inspect(step)
+    image = render_faces(solid, mesh_step(step), out_dir=tmp_path, fmt="svg")
+    text = image.read_text(encoding="utf-8")
+
+    # Every face's tag appears, and the caption says how many there are.
+    assert f"{len(solid.faces)} faces" in text
+    assert "name one to hold it" in text
+
+
+def test_face_labels_are_lifted_clear_of_the_part(tmp_path) -> None:
+    """Placed at the centroid, the two faces of a thin plate land on the same
+    screen position and their numbers sit on top of each other -- on an
+    L-bracket that was 1 over 8 and 7 over 4, worse than no label at all.
+    """
+    gmsh = pytest.importorskip("gmsh", reason="needs the inference extra")
+    pytest.importorskip("torch", reason="mesh_step imports torch_geometric")
+
+    from fea_surrogate.cad_intake import inspect
+    from fea_surrogate.features import mesh_step
+    from fea_surrogate.render import render_faces
+
+    step = tmp_path / "plate.step"
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("plate")
+        gmsh.model.occ.addBox(0.0, 0.0, 0.0, 80.0, 60.0, 3.0)
+        gmsh.model.occ.synchronize()
+        gmsh.write(str(step))
+    finally:
+        gmsh.finalize()
+
+    solid = inspect(step)
+    mesh = mesh_step(step)
+    image = render_faces(solid, mesh, out_dir=tmp_path)
+
+    assert image.read_bytes().startswith(PNG_MAGIC)
+    # The top and bottom faces of a 3 mm plate: their centroids are 3 mm apart,
+    # so a label drawn at the centroid would be unreadable. The render lifts
+    # each one along its own normal instead.
+    flat = [f for f in solid.faces if abs(f.normal[2]) > 0.9]
+    assert len(flat) == 2
+    assert abs(flat[0].centroid[2] - flat[1].centroid[2]) == pytest.approx(3.0)
+
+
+def test_a_mesh_without_a_face_map_cannot_be_drawn_by_face(tmp_path) -> None:
+    from fea_surrogate.features import ScaledMesh
+    from fea_surrogate.render import render_faces
+
+    vertices, faces = _tetrahedron()
+    bare = ScaledMesh(vertices.astype(np.float32), faces.T, 1.0, 1.0)
+
+    with pytest.raises(ScreeningContractError, match="face-to-node map"):
+        render_faces(object(), bare, out_dir=tmp_path)

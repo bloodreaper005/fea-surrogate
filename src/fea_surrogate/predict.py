@@ -317,6 +317,26 @@ def screen_step(
     # own: the consumer refuses an unrecognised top-level field, and a neighbour
     # list is context for reading the interval rather than part of the contract.
     extra_limitations: list[str] = []
+
+    # Naming a family earns that family's band. It does not make an arbitrary
+    # load case belong to that family.
+    #
+    # Measured on one bracket. Its family preset loads the far end -- face 6,
+    # 257 mm^2 at x=109. Selecting "every face pointing +x" instead also picks
+    # up face 8, 1872 mm^2 at x=3.8, hard against the held face. That is 8.3x
+    # the area, so the traction falls from 19.4 to 2.3 MPa, and most of the load
+    # moves to where it has almost no moment arm. The solved answer went from
+    # 1043 MPa to 126. Under the family's own load case the solve fell inside
+    # the screening interval; under that one it fell a factor of three outside.
+    # The band was right about bracket-shaped problems and was never asked
+    # about this one.
+    if family and origin == "caller-supplied selectors":
+        extra_limitations.append(
+            f"the {family!r} band was measured on that family's own load case; "
+            "this one was supplied by the caller and differs from it, so the "
+            "stated coverage is not established for this load pattern"
+        )
+
     if neighbours is not None:
         try:
             found = neighbours.query(

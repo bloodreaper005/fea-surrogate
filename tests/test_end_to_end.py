@@ -227,3 +227,28 @@ def test_the_mesh_carries_tetrahedra_for_the_swept_version(parts) -> None:
 
     assert mesh_step(parts["step"]).tetrahedra is not None
     assert mesh_step(parts["step"], version=SFEM_V1).tetrahedra is None
+
+
+def test_a_family_band_with_a_caller_load_case_says_it_may_not_apply(
+    parts, surrogate
+) -> None:
+    """Naming a family earns its band; it does not make any load case that
+    family's.
+
+    Measured on one bracket: under the family's own load case the solved value
+    fell inside the screening interval. Selecting every +x-facing face instead
+    of the far end alone spread the same 5000 N over 8.3x the area and moved
+    most of it beside the held face, where it has almost no moment arm; the
+    solve went 1043 -> 126 MPa and fell a factor of three outside the interval.
+    The band was right about bracket-shaped problems and was never asked about
+    that one.
+    """
+    own = screen_step(surrogate, parts["step"], force_n=5000.0, family="bracket")
+    supplied = screen_step(
+        surrogate, parts["step"], force_n=5000.0, family="bracket",
+        fixed={"axis": "z", "at": "min"}, loaded={"axis": "z", "at": "max"},
+    )
+
+    assert not any("not established" in x for x in own["limitations"])
+    assert any("not established for this load pattern" in x
+               for x in supplied["limitations"])
