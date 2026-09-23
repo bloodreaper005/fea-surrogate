@@ -29,11 +29,16 @@ it is refused rather than silently extrapolated.
 
 ## 2. Should `sweep/v2` get a nodal head at all?
 
-**The question.** `PeakGNN` pools the whole graph into one scalar. There is no
-per-node quantity anywhere in it, so **contour plots are not currently possible**
-— and contours were the original ask. `render.py` refuses rather than painting
-the pooled value across every node, because a uniform plot of one number is
-indistinguishable from a prediction at a glance.
+**Partly answered.** Contours exist now, from the solver rather than the model —
+3.5 s for the true field against 60 ms for a scalar estimate. So the question is
+no longer "can we draw a contour" but "do we need one at triage speed".
+
+**The question that remains.** `PeakGNN` pools the whole graph into one scalar,
+so the model still cannot produce a field. `render.py` refuses rather than
+painting the pooled value across every node, because a uniform plot of one
+number is indistinguishable from a prediction at a glance. A nodal head is worth
+a training cycle only if contours are wanted across many candidates rather than
+on the one already chosen to look at.
 
 **Why it is not mine to settle.** It costs a training run and it weakens a claim.
 The pooled head exists for a reason recorded in `model.py`: a maximum over noisy
@@ -49,8 +54,9 @@ CW-adaptive split-CP rather than the scalar Mondrian bands in use now.
 **What it would cost.** No new data. Every shard already carries `y_nodal`, so
 this is a training run against data on disk, not another sweep.
 
-**Until then.** Scalar only, and the renderer refuses a field rather than
-inventing one.
+**Until then.** Scalar only from the model, and the renderer refuses a
+predicted field rather than inventing one. `surrogate_solve` gives the real one
+in seconds.
 
 ---
 

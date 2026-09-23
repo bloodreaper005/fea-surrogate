@@ -20,6 +20,25 @@ training domain, and gates nothing in the consuming design session.
    and the answer looks perfectly healthy.
 3. **`surrogate_screen`** returns the interval, the parts it resembles with
    their solved stresses rescaled to this load, and everything it assumed.
+4. **`surrogate_solve`** runs the real solver on the part and returns the true
+   field as a contour — about 3.5 s for an 11,000-node bracket against 60 ms to
+   screen it. Screening is triage that aims an expensive check at the right
+   candidate; this is the check. Not an estimate, so it is not dressed as one:
+   its own schema, its own attestation, and a stamp reading SOLVED rather than
+   ESTIMATE.
+
+Every solve also screens the same part and records whether the interval
+contained the solved answer, so each one is a coverage datapoint on a part
+someone actually cared about. No synthetic sweep can produce those.
+
+Use `critical_distance_mpa`, never the peak. An elastic peak at a re-entrant
+corner is singular and rises without bound as the mesh is refined, so it states
+the mesh rather than the part. The contour's second panel maps each value
+against the converged one, so the regions not to trust are visible.
+
+Naming a family earns that family's calibration band. It does not make an
+arbitrary load case belong to that family, and a document says so in its
+limitations when the two differ.
 
 Gravity is arithmetic, not screening: density times volume times g, weighed
 against the applied load. Under 5% it proceeds as a stated assumption; above
