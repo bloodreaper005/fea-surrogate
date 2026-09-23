@@ -310,14 +310,19 @@ def propose(solid) -> dict[str, Any]:  # noqa: ANN001
     """
     import numpy as np
 
-    planar = [f for f in solid.faces if f.planar] or list(solid.faces)
-    support = planar[0]
-    others = [f for f in planar if f.tag != support.tag]
+    # Prefer planar faces, but do not require them. A real machined part can
+    # have none at all: the OpenCASCADE test component `component8` is 21 faces
+    # and every one of them curved.
+    planar = [f for f in solid.faces if f.planar]
+    candidates = planar or list(solid.faces)
+    support = candidates[0]
+    others = [f for f in candidates if f.tag != support.tag]
     opposed = (
         min(others, key=lambda f: float(np.dot(f.normal, support.normal)))
         if others
         else support
     )
+    kind = "planar" if support.planar else "curved"
 
     return {
         "proposed": {
@@ -331,8 +336,10 @@ def propose(solid) -> dict[str, Any]:  # noqa: ANN001
         },
         "why": {
             "fixed": (
-                f"face {support.tag} is the largest planar face "
+                f"face {support.tag} is the largest {kind} face "
                 f"({support.area:.4g} mm^2)"
+                + ("" if planar else "; this part has no planar face at all, so "
+                   "the guess is weaker than usual")
             ),
             "load": (
                 f"face {opposed.tag} faces most nearly away from it, so a load "

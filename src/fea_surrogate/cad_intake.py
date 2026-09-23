@@ -92,6 +92,10 @@ class Solid:
     area: float
     bbox_min: tuple[float, float, float]
     bbox_max: tuple[float, float, float]
+    #: How many separate solids the file holds. An assembly is not a part: the
+    #: surrogate has only ever seen single connected bodies, and a solve on
+    #: several of them is singular unless every one is held.
+    solid_count: int = 1
 
     @property
     def extent(self) -> np.ndarray:
@@ -116,6 +120,7 @@ class Solid:
             "bbox_min": list(self.bbox_min),
             "bbox_max": list(self.bbox_max),
             "diagonal": self.diagonal,
+            "solid_count": self.solid_count,
         }
 
 
@@ -222,6 +227,7 @@ def inspect(path: str | Path) -> Solid:
             # Largest first: the face a person means is usually a big one, and a
             # listing that opens with slivers is unreadable.
             faces=tuple(sorted(faces, key=lambda f: -f.area)),
+            solid_count=len(volumes),
             volume=float(sum(gmsh.model.occ.getMass(3, tag) for _, tag in volumes)),
             area=float(sum(f.area for f in faces)),
             bbox_min=tuple(float(v) for v in bbox_min),
@@ -255,6 +261,11 @@ def summarise(solid: Solid, limit: int = 20) -> Iterator[str]:
         f"{len(solid.faces)} faces, volume {solid.volume:.4g}, "
         f"bounding box {extent[0]:.4g} x {extent[1]:.4g} x {extent[2]:.4g}"
     )
+    if solid.solid_count > 1:
+        yield (
+            f"  {solid.solid_count} SEPARATE SOLIDS -- this is an assembly, not "
+            "a part. Screening and solving both need one body at a time."
+        )
     for face in solid.faces[:limit]:
         shape = "planar" if face.planar else "curved"
         cx, cy, cz = face.centroid

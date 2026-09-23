@@ -147,6 +147,29 @@ def _is_face_selector(spec: Any) -> bool:
     return isinstance(spec, Mapping) and bool(_FACE_KEYS & set(spec))
 
 
+def _refuse_an_assembly(mesh) -> None:  # noqa: ANN001
+    """An assembly is not a part, and the model has only ever seen parts.
+
+    Every family in the sweep builds one connected solid, so nothing in the
+    training set looks like this and nothing in the domain gate can see it --
+    the bounds describe material and size, not connectivity. Measured on the
+    STEP conformance assembly `as1-tu-203`: 18 separate bodies, and screening
+    returned 42.7 to 130.4 MPa without hesitating.
+    """
+    if mesh.tetrahedra is None:
+        return
+    from .generate.solver import connected_bodies
+
+    count, _ = connected_bodies(np.asarray(mesh.tetrahedra), len(mesh.vertices))
+    if count > 1:
+        raise ScreeningContractError(
+            f"this file meshes into {count} disconnected bodies. Every sample "
+            "the model was fitted on is a single connected solid, so it has "
+            "nothing to say about an assembly and the declared bounds cannot "
+            "see the difference. Screen the bodies one at a time."
+        )
+
+
 def _resolve_specs(
     family: str | None,
     fixed: Mapping[str, Any] | None,
@@ -223,6 +246,7 @@ def screen_step(
         )
 
     mesh = mesh_step(step_path, version=surrogate.version)
+    _refuse_an_assembly(mesh)
     fixed_spec, loaded_spec, direction, origin = _resolve_specs(
         family, fixed, loaded, load_direction
     )

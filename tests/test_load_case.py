@@ -247,3 +247,42 @@ def test_a_proposal_carries_its_reasons_and_what_is_still_missing() -> None:
     assert any("magnitude_n" in q for q in suggestion["still_needed"])
     # The proposal must never invent a load magnitude.
     assert "magnitude_n" not in suggestion["proposed"]["load"]
+
+
+def test_a_part_with_no_planar_face_is_not_described_as_planar() -> None:
+    """A real machined part can have none at all.
+
+    The OpenCASCADE test component `component8` is 21 faces and every one is
+    curved; the proposal called the largest of them "the largest planar face",
+    which is a false statement in text a person reads and acts on.
+    """
+    curved = _Solid(
+        faces=(
+            _Face(1, 900.0, (1.0, 0.0, 0.0), planar=False),
+            _Face(2, 500.0, (-1.0, 0.0, 0.0), planar=False),
+        ),
+        volume=1000.0,
+    )
+
+    suggestion = propose(curved)
+
+    why = suggestion["why"]["fixed"]
+    assert "largest planar face" not in why
+    assert "largest curved face" in why
+    # And it volunteers that the guess is weaker here, rather than leaving the
+    # reader to notice that nothing flat was available.
+    assert "no planar face at all" in why
+
+
+def test_a_part_with_planar_faces_still_prefers_them() -> None:
+    mixed = _Solid(
+        faces=(
+            _Face(1, 900.0, (1.0, 0.0, 0.0), planar=False),
+            _Face(2, 500.0, (-1.0, 0.0, 0.0), planar=True),
+        ),
+        volume=1000.0,
+    )
+
+    why = propose(mixed)["why"]["fixed"]
+
+    assert "face 2" in why and "largest planar face" in why

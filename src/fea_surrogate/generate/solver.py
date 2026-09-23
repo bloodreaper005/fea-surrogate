@@ -184,6 +184,53 @@ def _consistent_face_loads(
     return loads
 
 
+def connected_bodies(tets: np.ndarray, node_count: int) -> tuple[int, np.ndarray]:
+    """How many disconnected bodies the mesh holds, and which body each node is in.
+
+    Nodes belonging to no tetrahedron get label -1: they carry no stiffness and
+    are excluded from the system anyway.
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    pairs = np.array([(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)])
+    edges = tets[:, pairs].reshape(-1, 2)
+    graph = coo_matrix(
+        (np.ones(len(edges)), (edges[:, 0], edges[:, 1])),
+        shape=(node_count, node_count),
+    )
+    _, labels = connected_components(graph, directed=False)
+
+    referenced = np.zeros(node_count, dtype=bool)
+    referenced[np.unique(tets)] = True
+    labels = np.where(referenced, labels, -1)
+    return len(set(labels[referenced].tolist())), labels
+
+
+def _refuse_unconstrained_bodies(
+    tets: np.ndarray, node_count: int, fixed_mask: np.ndarray
+) -> None:
+    """Refuse a system whose separate bodies are not each held."""
+    count, labels = connected_bodies(tets, node_count)
+    if count <= 1:
+        return
+    loose = [
+        body
+        for body in sorted(set(labels[labels >= 0].tolist()))
+        if not fixed_mask[labels == body].any()
+    ]
+    if not loose:
+        return
+    floating = int(sum((labels == body).sum() for body in loose))
+    raise SolveError(
+        f"this mesh holds {count} disconnected bodies and {len(loose)} of them "
+        f"are not held anywhere, which is {6 * len(loose)} rigid-body modes and "
+        f"{floating} of {node_count} nodes with no restoring force. The linear "
+        "system is singular and any answer from it would be noise. Solve the "
+        "bodies one at a time, or constrain every one of them."
+    )
+
+
 def solve(sample: MeshedSample) -> SolvedSample:
     """Solve the sample and return per-node displacement and von Mises stress."""
     from scipy.sparse import coo_matrix
@@ -230,6 +277,19 @@ def solve(sample: MeshedSample) -> SolvedSample:
         # modes with no restoring force. Caught here rather than left to the
         # linear solver, which would return noise rather than fail.
         raise SolveError("no node is fixed; the body has rigid-body freedom")
+
+    # One fixed node somewhere is not enough. The mesh may hold several
+    # disconnected bodies, and each one that carries no constraint brings its
+    # own six rigid-body modes.
+    #
+    # Every family in this package builds a single connected solid, so this
+    # never fired during the sweep -- and that is exactly why it was missing.
+    # Measured on the STEP conformance assembly `as1-tu-203`: 18 bodies, 17 of
+    # them unconstrained, 97% of nodes floating, 102 singular modes. The check
+    # above passed because 15 nodes were fixed, and the solve returned 1031 MPa
+    # with no indication that it was noise.
+    _refuse_unconstrained_bodies(tets, n, sample.fixed_mask)
+
     free = np.ones(3 * n, dtype=bool)
     free[np.stack([3 * constrained, 3 * constrained + 1,
                    3 * constrained + 2], axis=1).reshape(-1)] = False

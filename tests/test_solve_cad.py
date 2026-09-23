@@ -187,3 +187,77 @@ def test_a_load_case_naming_an_absent_face_is_refused(tmp_path) -> None:
 
     with pytest.raises(SolveCadError, match="no face"):
         solve_step(path, case)
+
+
+def _two_bars(tmp_path):
+    """Two boxes with a gap: one file, two bodies, no contact between them."""
+    path = tmp_path / "pair.step"
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.add("pair")
+        gmsh.model.occ.addBox(0.0, 0.0, 0.0, 60.0, 20.0, 10.0)
+        gmsh.model.occ.addBox(100.0, 0.0, 0.0, 60.0, 20.0, 10.0)
+        gmsh.model.occ.synchronize()
+        gmsh.write(str(path))
+    finally:
+        gmsh.finalize()
+    return path
+
+
+def test_an_assembly_whose_bodies_are_not_all_held_is_refused(tmp_path) -> None:
+    """One fixed node somewhere is not enough.
+
+    Every family in this package builds a single connected solid, so the old
+    guard -- "is anything fixed at all" -- never had to be more than that. On the
+    STEP conformance assembly `as1-tu-203` it passed with 15 nodes fixed while 17
+    of 18 bodies floated free, 102 rigid-body modes, and the singular system
+    returned 1031 MPa with no sign that it was noise.
+    """
+    path = _two_bars(tmp_path)
+    solid = inspect(path)
+    held = [min(solid.faces, key=lambda f: f.centroid[0]).tag]
+    pushed = [max(solid.faces, key=lambda f: f.centroid[0]).tag]
+    case = parse(
+        {
+            "fixed": {"faces": held},
+            "load": {"faces": pushed, "magnitude_n": 1000.0,
+                     "direction": [0.0, 0.0, -1.0]},
+        },
+        solid,
+    )
+
+    with pytest.raises(SolveCadError, match="disconnected bodies"):
+        solve_step(path, case)
+
+
+def test_the_refusal_counts_the_free_bodies_and_their_modes(tmp_path) -> None:
+    path = _two_bars(tmp_path)
+    solid = inspect(path)
+    case = parse(
+        {
+            "fixed": {"faces": [min(solid.faces, key=lambda f: f.centroid[0]).tag]},
+            "load": {"faces": [max(solid.faces, key=lambda f: f.centroid[0]).tag],
+                     "magnitude_n": 1000.0, "direction": [0.0, 0.0, -1.0]},
+        },
+        solid,
+    )
+
+    with pytest.raises(SolveCadError) as caught:
+        solve_step(path, case)
+
+    message = str(caught.value)
+    assert "2 disconnected bodies" in message
+    assert "1 of them" in message
+    assert "6 rigid-body modes" in message
+    assert "noise" in message
+
+
+def test_a_file_holding_several_solids_is_counted_as_such(tmp_path) -> None:
+    """An assembly is not a part, and the listing should say so up front."""
+    from fea_surrogate.cad_intake import summarise
+
+    solid = inspect(_two_bars(tmp_path))
+
+    assert solid.solid_count == 2
+    assert any("SEPARATE SOLIDS" in line for line in summarise(solid))
