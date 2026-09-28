@@ -85,12 +85,19 @@ def mesh_step(path: str | Path, *, version: str = DEFAULT_VERSION) -> ScaledMesh
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("screening")
-        gmsh.model.occ.importShapes(str(path))
-        gmsh.model.occ.synchronize()
+        # The same import the intake uses, sewing only when a file holds no
+        # solid. Two import paths that disagree about what a file contains is
+        # the defect this package has already paid for more than once.
+        from .cad_intake import import_shapes
+
+        import_shapes(path)
 
         volumes = gmsh.model.getEntities(3)
         if not volumes:
-            raise MeshingError("the STEP file contains no solid")
+            raise MeshingError(
+                "the file contains no solid, and sewing its surfaces into one "
+                "did not close them"
+            )
         corners = np.array([gmsh.model.getBoundingBox(3, t) for _, t in volumes])
         extent = corners[:, 3:].max(axis=0) - corners[:, :3].min(axis=0)
         diagonal = float(np.linalg.norm(extent))

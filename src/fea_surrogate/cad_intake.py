@@ -96,6 +96,9 @@ class Solid:
     #: surrogate has only ever seen single connected bodies, and a solve on
     #: several of them is singular unless every one is held.
     solid_count: int = 1
+    #: True when the file held no solid and its surfaces had to be sewn into
+    #: one. A repair, not a read: it closes gaps within a tolerance.
+    healed: bool = False
 
     @property
     def extent(self) -> np.ndarray:
@@ -121,6 +124,7 @@ class Solid:
             "bbox_max": list(self.bbox_max),
             "diagonal": self.diagonal,
             "solid_count": self.solid_count,
+            "healed": self.healed,
         }
 
 
@@ -143,6 +147,38 @@ def check_readable(path: str | Path) -> Path:
     if not resolved.is_file():
         raise CadFormatError(f"no such file: {resolved}")
     return resolved
+
+
+def import_shapes(path: str | Path) -> bool:
+    """Import into the current gmsh model, sewing surfaces only if we must.
+
+    IGES is the reason this exists. It is a surface format in practice -- a box
+    written to IGES and read back is six trimmed faces and no solid at all, so
+    it imports cleanly and can never be screened. OpenCASCADE will sew those
+    faces into a shell and close it into a solid, and on the same box that
+    recovers the volume exactly.
+
+    Tried plainly first and healed only on failure, because sewing is a repair:
+    it closes gaps within a tolerance, and a file that already has a solid
+    should not be quietly rebuilt. Returns whether healing was needed, so the
+    caller can say so rather than let a repaired part pass for an exact one.
+    """
+    import gmsh
+
+    gmsh.model.occ.importShapes(str(path))
+    gmsh.model.occ.synchronize()
+    if gmsh.model.getEntities(3):
+        return False
+
+    gmsh.model.occ.removeAllDuplicates()
+    for _, tag in gmsh.model.getEntities(2):
+        gmsh.model.occ.remove([(2, tag)], recursive=True)
+    gmsh.option.setNumber("Geometry.OCCSewFaces", 1)
+    gmsh.option.setNumber("Geometry.OCCMakeSolids", 1)
+    gmsh.model.occ.importShapes(str(path))
+    gmsh.model.occ.synchronize()
+    return bool(gmsh.model.getEntities(3))
+
 
 
 def _face_normal(tag: int) -> tuple[float, float, float]:
@@ -189,14 +225,14 @@ def inspect(path: str | Path) -> Solid:
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("intake")
-        gmsh.model.occ.importShapes(str(resolved))
-        gmsh.model.occ.synchronize()
+        healed = import_shapes(resolved)
 
         volumes = gmsh.model.getEntities(3)
         if not volumes:
             raise CadIntakeError(
-                "the file contains no solid. A surface or wireframe model "
-                "cannot be screened; it has no volume to carry stress."
+                "the file contains no solid, and sewing its surfaces into one "
+                "did not close them. A surface or wireframe model cannot be "
+                "screened; it has no volume to carry stress."
             )
 
         corners = np.array([gmsh.model.getBoundingBox(3, tag) for _, tag in volumes])
@@ -228,6 +264,7 @@ def inspect(path: str | Path) -> Solid:
             # listing that opens with slivers is unreadable.
             faces=tuple(sorted(faces, key=lambda f: -f.area)),
             solid_count=len(volumes),
+            healed=healed,
             volume=float(sum(gmsh.model.occ.getMass(3, tag) for _, tag in volumes)),
             area=float(sum(f.area for f in faces)),
             bbox_min=tuple(float(v) for v in bbox_min),
@@ -261,6 +298,11 @@ def summarise(solid: Solid, limit: int = 20) -> Iterator[str]:
         f"{len(solid.faces)} faces, volume {solid.volume:.4g}, "
         f"bounding box {extent[0]:.4g} x {extent[1]:.4g} x {extent[2]:.4g}"
     )
+    if solid.healed:
+        yield (
+            "  NOTE: this file held no solid; its surfaces were sewn into one. "
+            "That is a repair within a tolerance, not an exact read."
+        )
     if solid.solid_count > 1:
         yield (
             f"  {solid.solid_count} SEPARATE SOLIDS -- this is an assembly, not "

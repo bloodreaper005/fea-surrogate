@@ -127,6 +127,33 @@ def _desaturate(rgba: np.ndarray, confidence: np.ndarray) -> np.ndarray:
     return out
 
 
+#: How many discrete levels a banded contour uses. Nine is what Ansys and
+#: Abaqus show by default, and the reason is readability rather than taste: a
+#: continuous ramp tells you where the stress is high, and bands let you read a
+#: number off the plot.
+CONTOUR_LEVELS = 9
+
+
+def banded_colours(
+    values: np.ndarray, vmin: float, vmax: float, colormap: str,
+    levels: int = CONTOUR_LEVELS,
+):
+    """Discrete contour bands, and the norm that produced them.
+
+    Returns the per-value colours and a `BoundaryNorm`, so the colourbar can be
+    drawn with the same boundaries and a reader can put a number to a band.
+    """
+    from matplotlib import colormaps
+    from matplotlib.colors import BoundaryNorm
+
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        vmin, vmax = float(vmin), float(vmin) + 1.0
+    boundaries = np.linspace(vmin, vmax, levels + 1)
+    palette = colormaps[colormap].resampled(levels)
+    norm = BoundaryNorm(boundaries, levels)
+    return palette(norm(np.asarray(values, dtype=float))), norm, palette
+
+
 def _face_values(values: np.ndarray, faces: np.ndarray) -> np.ndarray:
     """One value per triangle, averaged from its three nodes."""
     return values[faces].mean(axis=1)
@@ -152,12 +179,20 @@ def _draw_surface(
     inside = ~out_of_domain_faces
 
     if inside.any():
+        # Edge colour matched to face colour, not "none". Adjacent polygons are
+        # antialiased independently, so a transparent edge lets the background
+        # show through as a hairline along every shared edge -- which is what
+        # made a smooth field look faceted on a curved part. Matplotlib's 3D
+        # cannot Gouraud-shade a triangulation, so closing the seams is as
+        # smooth as this gets; banded levels make flat shading correct anyway.
+        facecolors = colours[inside]
         axis.add_collection3d(
             Poly3DCollection(
                 polygons[inside],
-                facecolors=colours[inside],
-                edgecolors="none",
-                linewidths=0.0,
+                facecolors=facecolors,
+                edgecolors=facecolors,
+                linewidths=0.35,
+                antialiased=True,
             )
         )
     if out_of_domain_faces.any():
@@ -569,7 +604,9 @@ def field_or_refuse(surrogate, data):  # noqa: ANN001
 
 
 __all__ = [
+    "CONTOUR_LEVELS",
     "FIELD_COLORMAP",
+    "banded_colours",
     "SCREENING_HEADER",
     "SCREENING_WATERMARK",
     "WASHOUT_RELATIVE_HALF_WIDTH",

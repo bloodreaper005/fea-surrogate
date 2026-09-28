@@ -31,7 +31,14 @@ from typing import Any
 
 import numpy as np
 
-from .render import FIELD_COLORMAP, _draw_surface, _face_values, mesh_sha256
+from .render import (
+    CONTOUR_LEVELS,
+    FIELD_COLORMAP,
+    _draw_surface,
+    _face_values,
+    banded_colours,
+    mesh_sha256,
+)
 from .screening import ScreeningContractError, file_sha256
 
 
@@ -42,6 +49,14 @@ from .screening import ScreeningContractError, file_sha256
 #: solve is allowed to look solved; stamping ESTIMATE on the true answer would
 #: be its own kind of lie.
 SOLVED_HEADER = "SOLVED — linear elastic, P1 tetrahedra"
+
+#: The field is scaled to this percentile rather than its maximum. An elastic
+#: peak sits at a singularity and is often several times the stress anywhere
+#: else, so scaling to the maximum spends one band on the singular corner and
+#: crushes the entire rest of the part into the bottom band. Measured on the
+#: L-bracket: max 2753 MPa against a 95th percentile of about 600, so eight of
+#: nine bands were unused. Most FEA post-processors clip for the same reason.
+FIELD_CLIP_PERCENTILE = 95.0
 
 SINGULARITY_RATIO = 2.0
 
@@ -86,8 +101,16 @@ def render_solved(
     stem: str = "solved",
     dpi: int = 150,
     fmt: str = "png",
+    levels: int = CONTOUR_LEVELS,
+    clip_percentile: float = FIELD_CLIP_PERCENTILE,
 ) -> SolvedRender:
-    """Two panels: the solved field, and where the mesh is speaking for it."""
+    """Two panels: the solved field, and where the mesh is speaking for it.
+
+    `levels` sets the number of discrete contour bands, nine by default -- what
+    Ansys and Abaqus show, and for a reason: a continuous ramp says where the
+    stress is high, bands let a reader put a number to a region. Pass 0 for a
+    continuous ramp instead.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -119,24 +142,45 @@ def render_solved(
 
     # Left: the field, at full saturation. It is not an estimate.
     vmin, vmax = float(values.min()), float(values.max())
+    clipped = clip_percentile < 100.0 and values.size > 1
+    if clipped:
+        top = float(np.percentile(values, clip_percentile))
+        # Only clip if it actually buys resolution. On a part with no
+        # singularity the percentile sits just under the maximum and clipping
+        # would discard range for nothing.
+        clipped = top > vmin and vmax > top * 1.2
+        if clipped:
+            vmax = top
     if vmin == vmax:
         vmin, vmax = vmin - 0.5, vmax + 0.5
     field_axis = figure.add_subplot(1, 2, 1, projection="3d")
     field_axis.set_facecolor("#f4f2ee")
-    normal = plt.Normalize(vmin=vmin, vmax=vmax)
-    _draw_surface(
-        field_axis,
-        vertices,
-        faces,
-        colormaps[FIELD_COLORMAP](normal(_face_values(values, faces))),
-        none_refused,
-    )
+    face_field = _face_values(values, faces)
+    if levels > 0:
+        colours, normal, palette = banded_colours(
+            face_field, vmin, vmax, FIELD_COLORMAP, levels
+        )
+        mappable = ScalarMappable(norm=normal, cmap=palette)
+    else:
+        normal = plt.Normalize(vmin=vmin, vmax=vmax)
+        colours = colormaps[FIELD_COLORMAP](normal(face_field))
+        mappable = ScalarMappable(norm=normal, cmap=FIELD_COLORMAP)
+    _draw_surface(field_axis, vertices, faces, colours, none_refused)
     figure.text(0.26, 0.905, "solved field", ha="center", va="top",
                 fontsize=10, color="#333333")
-    figure.colorbar(
-        ScalarMappable(norm=normal, cmap=FIELD_COLORMAP),
-        ax=field_axis, shrink=0.42, pad=0.0, aspect=28,
-    ).set_label(f"{quantity} [{units}]", fontsize=8)
+    bar = figure.colorbar(
+        mappable, ax=field_axis, shrink=0.42, pad=0.0, aspect=28,
+        # Ticks on the band boundaries, so each band has a number either side
+        # of it rather than a colour a reader has to interpolate by eye.
+        **({"ticks": normal.boundaries, "spacing": "proportional"}
+           if levels > 0 else {}),
+    )
+    bar.set_label(
+        f"{quantity} [{units}]"
+        + (f"\ntop band is >= p{clip_percentile:g}" if clipped else ""),
+        fontsize=8,
+    )
+    bar.ax.tick_params(labelsize=7)
 
     # Right: where the mesh, not the part, is setting the value. Computed from
     # the nodal field rather than the element one, because element indices do
@@ -145,37 +189,57 @@ def render_solved(
     nodal_index = _singularity_index(values, solved.critical_distance_mpa)
     singular_axis = figure.add_subplot(1, 2, 2, projection="3d")
     singular_axis.set_facecolor("#f4f2ee")
-    singular_norm = plt.Normalize(vmin=0.0, vmax=max(SINGULARITY_RATIO, 1.0) * 1.5)
-    _draw_surface(
-        singular_axis,
-        vertices,
-        faces,
-        colormaps[SINGULARITY_COLORMAP](
-            singular_norm(_face_values(nodal_index, faces))
-        ),
-        none_refused,
-    )
+    top = max(SINGULARITY_RATIO, 1.0) * 1.5
+    face_index = np.clip(_face_values(nodal_index, faces), 0.0, top)
+    if levels > 0:
+        singular_colours, singular_norm, singular_palette = banded_colours(
+            face_index, 0.0, top, SINGULARITY_COLORMAP, levels
+        )
+        singular_mappable = ScalarMappable(
+            norm=singular_norm, cmap=singular_palette
+        )
+    else:
+        singular_norm = plt.Normalize(vmin=0.0, vmax=top)
+        singular_colours = colormaps[SINGULARITY_COLORMAP](
+            singular_norm(face_index)
+        )
+        singular_mappable = ScalarMappable(
+            norm=singular_norm, cmap=SINGULARITY_COLORMAP
+        )
+    _draw_surface(singular_axis, vertices, faces, singular_colours, none_refused)
     figure.text(0.74, 0.905, "value ÷ converged value", ha="center", va="top",
                 fontsize=10, color="#333333")
-    figure.colorbar(
-        ScalarMappable(norm=singular_norm, cmap=SINGULARITY_COLORMAP),
-        ax=singular_axis, shrink=0.42, pad=0.0, aspect=28,
-    ).set_label("× critical-distance value", fontsize=8)
+    singular_bar = figure.colorbar(
+        singular_mappable, ax=singular_axis, shrink=0.42, pad=0.0, aspect=28,
+        **({"ticks": singular_norm.boundaries, "spacing": "proportional"}
+           if levels > 0 else {}),
+    )
+    singular_bar.set_label("× critical-distance value", fontsize=8)
+    singular_bar.ax.tick_params(labelsize=7)
 
     figure.text(
         0.5, 0.965,
         f"{SOLVED_HEADER} — {quantity} [{units}]",
         ha="center", va="top", fontsize=11, fontweight="bold", color="#1f4e79",
     )
+    # Two lines. One was long enough to run off both edges of the image once
+    # the clip note was added to it.
     figure.text(
-        0.5, 0.035,
+        0.5, 0.045,
         f"{solved.node_count} nodes, {solved.element_count} elements, "
-        f"{solved.seconds:.1f} s · use {solved.critical_distance_mpa:.4g} MPa: "
-        f"the peak of {solved.peak_von_mises:.4g} MPa sits at a singularity and "
-        "rises without bound under refinement",
+        f"{solved.seconds:.1f} s"
+        + (f" · scale clipped at p{clip_percentile:g} ({vmax:.4g} {units})"
+           if clipped else ""),
         ha="center", va="bottom", fontsize=8, color="#444444",
     )
-    figure.subplots_adjust(left=0.0, right=1.0, top=0.88, bottom=0.07, wspace=0.0)
+    figure.text(
+        0.5, 0.008,
+        f"use {solved.critical_distance_mpa:.4g} {units}: the peak of "
+        f"{solved.peak_von_mises:.4g} {units} sits at a singularity and rises "
+        "without bound under refinement",
+        ha="center", va="bottom", fontsize=8, color="#444444",
+    )
+    figure.subplots_adjust(left=0.0, right=1.0, top=0.88, bottom=0.10, wspace=0.0)
     figure.savefig(image_path, dpi=dpi, facecolor=figure.get_facecolor())
     plt.close(figure)
 
@@ -188,6 +252,7 @@ def render_solved(
 
 
 __all__ = [
+    "FIELD_CLIP_PERCENTILE",
     "SINGULARITY_COLORMAP",
     "SOLVED_HEADER",
     "SINGULARITY_RATIO",

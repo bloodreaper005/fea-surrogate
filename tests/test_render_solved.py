@@ -144,3 +144,102 @@ def test_a_field_that_does_not_match_the_mesh_is_refused(tmp_path) -> None:
 def test_a_non_finite_field_is_refused(tmp_path) -> None:
     with pytest.raises(ScreeningContractError, match="not finite"):
         render_solved(_tetrahedron((1.0, np.inf, 3.0, 4.0)), out_dir=tmp_path)
+
+
+def test_a_banded_contour_uses_discrete_levels(tmp_path) -> None:
+    """Nine bands is what Ansys and Abaqus show, and the reason is readability:
+    a continuous ramp says where the stress is high, bands let a reader put a
+    number to a region."""
+    from fea_surrogate.render import CONTOUR_LEVELS, banded_colours
+
+    values = np.linspace(0.0, 100.0, 500)
+    colours, norm, _ = banded_colours(values, 0.0, 100.0, "cividis")
+
+    assert len({tuple(c) for c in colours}) == CONTOUR_LEVELS
+    assert len(norm.boundaries) == CONTOUR_LEVELS + 1
+    assert norm.boundaries[0] == 0.0 and norm.boundaries[-1] == 100.0
+
+
+def test_banding_is_on_by_default_and_can_be_turned_off(tmp_path) -> None:
+    banded = render_solved(_tetrahedron(), out_dir=tmp_path, stem="b")
+    smooth = render_solved(_tetrahedron(), out_dir=tmp_path, stem="s", levels=0)
+
+    assert banded.image.read_bytes() != smooth.image.read_bytes()
+
+
+def test_the_colourbar_is_ticked_on_the_band_boundaries(tmp_path) -> None:
+    """A band with no number either side of it is a colour to interpolate by eye."""
+    out = render_solved(
+        _tetrahedron((0.0, 30.0, 60.0, 90.0)),
+        out_dir=tmp_path, fmt="svg", stem="s", levels=3,
+    )
+    text = out.image.read_text(encoding="utf-8")
+
+    # Boundaries at 0, 30, 60, 90 for three bands over that range.
+    for boundary in ("30", "60"):
+        assert boundary in text
+
+
+def test_a_degenerate_range_does_not_crash_the_banding() -> None:
+    """A part under no stress at all is flat, and flat must still plot."""
+    from fea_surrogate.render import banded_colours
+
+    colours, norm, _ = banded_colours(np.zeros(10), 0.0, 0.0, "cividis")
+
+    assert len(colours) == 10
+    assert norm.boundaries[-1] > norm.boundaries[0]
+
+
+def _spiky(n: int = 200, hot: int = 4) -> _Solved:
+    """A realistic field: most of the part quiet, a few nodes at a singularity.
+
+    Needs enough nodes for a percentile to mean anything. With four values the
+    95th percentile lands between the top two and the clip correctly declines to
+    fire, which is what the first version of this test got wrong.
+    """
+    rng = np.random.default_rng(0)
+    vertices = rng.random((n, 3)) * 10.0
+    faces = np.array([[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]])
+    # The quiet region has to vary. Perfectly uniform, its 95th percentile
+    # lands exactly on the minimum, and clipping there would collapse the range
+    # to nothing -- which is what the guard in `render_solved` refuses to do.
+    field = np.linspace(8.0, 20.0, n)
+    field[:hot] = 900.0
+    return _Solved(
+        vertices=vertices, surface_faces=faces, von_mises=field,
+        element_von_mises=field[:1], peak_von_mises=float(field.max()),
+        critical_distance_mpa=15.0, node_count=n, element_count=1, seconds=0.1,
+    )
+
+
+def test_the_scale_is_clipped_so_a_singularity_does_not_eat_the_bands(tmp_path) -> None:
+    """An elastic peak sits at a singularity and can be several times the stress
+    anywhere else. Scaled to the maximum, one band covers the singular corner
+    and the whole rest of the part crushes into the bottom band -- measured on
+    the L-bracket, max 1903 MPa against a 95th percentile of 1223.
+    """
+    text = render_solved(
+        _spiky(), out_dir=tmp_path, fmt="svg", stem="c"
+    ).image.read_text(encoding="utf-8")
+
+    # Stated on the plot, so the top band is never mistaken for the maximum.
+    assert "clipped at p95" in text
+
+
+def test_a_field_with_no_singularity_is_not_clipped(tmp_path) -> None:
+    """Clipping a part that does not need it discards range for nothing."""
+    flat = _spiky(hot=0)
+
+    text = render_solved(
+        flat, out_dir=tmp_path, fmt="svg", stem="n"
+    ).image.read_text(encoding="utf-8")
+
+    assert "clipped" not in text
+
+
+def test_clipping_can_be_turned_off(tmp_path) -> None:
+    text = render_solved(
+        _spiky(), out_dir=tmp_path, fmt="svg", stem="f", clip_percentile=100.0
+    ).image.read_text(encoding="utf-8")
+
+    assert "clipped" not in text
