@@ -201,3 +201,52 @@ def test_a_surface_that_cannot_be_closed_is_still_refused(tmp_path) -> None:
 
     with pytest.raises(CadIntakeError, match="did not close them"):
         inspect(path)
+
+
+def _declare_in_inches(step_path, out_path):
+    """Rewrite a millimetre STEP to declare the same numbers as inches.
+
+    The geometry is untouched; only the unit block changes, which is exactly
+    what arrives from a supplier working in imperial.
+    """
+    import re
+
+    src = step_path.read_text()
+    # Find the length unit by pattern; its entity number differs per file.
+    match = re.search(
+        r"#(\d+) = \( LENGTH_UNIT\(\) NAMED_UNIT\(\*\) "
+        r"SI_UNIT\(\.MILLI\.,\.METRE\.\) \);",
+        src,
+    )
+    assert match, "no millimetre length unit in this STEP; update this helper"
+    tag = int(match.group(1))
+    free = max(int(n) for n in re.findall(r"^#(\d+)", src, re.M)) + 1
+    replacement = (
+        f"#{tag} = ( CONVERSION_BASED_UNIT('INCH',#{free}) LENGTH_UNIT() "
+        f"NAMED_UNIT(#{free + 1}) );\n"
+        f"#{free} = LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(25.4),#{free + 2});\n"
+        f"#{free + 1} = DIMENSIONAL_EXPONENTS(1.,0.,0.,0.,0.,0.,0.);\n"
+        f"#{free + 2} = ( LENGTH_UNIT() NAMED_UNIT(*) "
+        f"SI_UNIT(.MILLI.,.METRE.) );"
+    )
+    out_path.write_text(src.replace(match.group(0), replacement, 1))
+    return out_path
+
+
+def test_a_file_declared_in_inches_is_converted_to_millimetres(tmp_path) -> None:
+    """Everything downstream is millimetres: the domain gate bounds, the
+    characteristic length, the MPa conversion.
+
+    OpenCASCADE honours the unit a STEP file declares and converts on import,
+    so nothing here has to. This pins that, because the whole pipeline would be
+    wrong by 25.4^2 = 645 if it ever stopped being true, and silently -- the
+    numbers stay plausible.
+    """
+    metric = _write(tmp_path, "step")
+    imperial = _declare_in_inches(metric, tmp_path / "inch.step")
+
+    mm = inspect(metric)
+    inch = inspect(imperial)
+
+    assert inch.diagonal == pytest.approx(mm.diagonal * 25.4, rel=1e-6)
+    assert inch.volume == pytest.approx(mm.volume * 25.4**3, rel=1e-6)
