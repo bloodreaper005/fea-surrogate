@@ -176,6 +176,20 @@ def mesh_step(path: str | Path, *, version: str = DEFAULT_VERSION) -> ScaledMesh
         span = float(max(SDF_BBOX_MAX) - min(SDF_BBOX_MIN))
         vertices = lowered * (span / float(lowered.max()))
 
+    # The characteristic length must come from the MESH, not the CAD bounding
+    # box, because that is what the sweep nondimensionalised by:
+    # `MeshedSample.characteristic_length_mm` is the norm of the mesh vertex
+    # extent. OpenCASCADE's box for a curved face bounds its control polygon and
+    # overshoots the surface -- on a bored hex prism by 10.2%, which lands
+    # straight in the prediction as (L_mesh/L_cad)^2 = 0.806.
+    #
+    # Every one of the six families is planar enough that the two agreed to
+    # seven figures, so nothing in the sweep could ever have shown this. The
+    # CAD box is still what sizes the mesh above, which is correct: the mesh
+    # does not exist yet at that point, and the sweep sized from the same thing.
+    extent = vertices.max(axis=0) - vertices.min(axis=0)
+    diagonal = float(np.linalg.norm(extent))
+
     return ScaledMesh(
         vertices=vertices.astype(np.float32),
         faces=faces,

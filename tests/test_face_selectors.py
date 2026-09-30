@@ -165,3 +165,52 @@ def test_the_mesh_carries_what_face_selection_needs(tmp_path) -> None:
     assert mesh.face_centroids
     assert set(mesh.face_nodes) == set(mesh.face_centroids)
     assert mesh.thinnest and mesh.thinnest > 0.0
+
+
+def test_the_characteristic_length_comes_from_the_mesh_not_the_cad_box(
+    tmp_path,
+) -> None:
+    """The sweep nondimensionalised by the mesh bounding box.
+
+    `MeshedSample.characteristic_length_mm` is the norm of the mesh vertex
+    extent, and the model is fitted on tau = sigma * L^2 / F with that L. If
+    screening derives L from the CAD box instead, the prediction is wrong by
+    (L_mesh / L_cad)^2.
+
+    OpenCASCADE's box for a curved face bounds its control polygon and
+    overshoots the surface. Every family here is planar enough that the two
+    agree to seven figures -- measured on a bored hex prism they differ by
+    10.2%, which is why the sweep could never have shown this and why the
+    deployed-coverage gate cannot either.
+    """
+    _, _, mesh, _, _ = _training_and_deployed("bracket", tmp_path)
+    vertices = np.asarray(mesh.vertices, dtype=float)
+    from_mesh = float(np.linalg.norm(vertices.max(axis=0) - vertices.min(axis=0)))
+
+    assert mesh.original_diagonal == pytest.approx(from_mesh, rel=1e-5)
+
+
+def test_a_curved_part_is_where_the_two_boxes_disagree(tmp_path) -> None:
+    """Guard the guard: on a planar part the check above passes either way."""
+    import gmsh as _gmsh
+
+    path = tmp_path / "ball.step"
+    _gmsh.initialize()
+    try:
+        _gmsh.option.setNumber("General.Terminal", 0)
+        _gmsh.model.add("ball")
+        _gmsh.model.occ.addSphere(0.0, 0.0, 0.0, 20.0)
+        _gmsh.model.occ.synchronize()
+        cad = _gmsh.model.getBoundingBox(3, 1)
+        cad_diagonal = float(
+            np.linalg.norm(np.array(cad[3:]) - np.array(cad[:3]))
+        )
+        _gmsh.write(str(path))
+    finally:
+        _gmsh.finalize()
+
+    mesh = mesh_step(path)
+
+    # A tessellated sphere sits inside its analytic box, so the mesh extent is
+    # the smaller of the two -- and it is the one the model was fitted on.
+    assert mesh.original_diagonal < cad_diagonal

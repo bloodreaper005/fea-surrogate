@@ -135,9 +135,12 @@ def main() -> None:
                 row["step"],
                 force_n=row["force_n"],
                 family=row["family"],
-                characteristic_length_mm=row["length_mm"],
-                # The sweep drew this per sample; screening with a default
-                # would measure a part the solver never solved.
+                # Deliberately NOT passing characteristic_length_mm. Handing
+                # the solver's own length to the screen measured a path no user
+                # takes, and masked a real defect: screening derived its length
+                # from the CAD bounding box while the sweep nondimensionalised
+                # by the mesh one. They agree to seven figures on the planar
+                # families and differ by 10.2% on a curved part.
                 poisson_ratio=row["poisson"],
             )
         except Exception as exc:
