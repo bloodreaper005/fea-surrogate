@@ -19,13 +19,34 @@ from fea_surrogate.generate.solver import SolveError, solve  # noqa: E402
 def _cantilever(length=200.0, width=40.0, thickness=10.0, force=1000.0, nu=0.3):
     """A plain box fixed at one end, loaded transversely at the other."""
     extent = np.array([length, width, thickness])
-    size = mesh_size_for(extent)
+    return _meshed(
+        lambda occ: occ.addBox(0.0, 0.0, 0.0, length, width, thickness),
+        size=mesh_size_for(extent), loaded_x=length, force=force, nu=nu,
+    )
 
+
+def _l_bracket(size, force=1000.0, nu=0.3, reach=60.0, height=60.0,
+               width=30.0, wall=8.0):
+    """A shelf fused to a wall: held at the wall's back, pushed down at the tip.
+
+    The inside corner where the shelf meets the wall is re-entrant, so the
+    elastic stress there is singular. `size` is explicit, so a test can refine.
+    """
+    def build(occ):
+        shelf = occ.addBox(0.0, 0.0, 0.0, reach, width, wall)
+        upright = occ.addBox(0.0, 0.0, 0.0, wall, width, height)
+        occ.fuse([(3, shelf)], [(3, upright)])
+
+    return _meshed(build, size=size, loaded_x=reach, force=force, nu=nu)
+
+
+def _meshed(build, *, size, loaded_x, force, nu):
+    """Mesh a gmsh OCC model, hold x=0, push -z on x=loaded_x."""
     gmsh.initialize()
     try:
         gmsh.option.setNumber("General.Terminal", 0)
-        gmsh.model.add("cantilever")
-        gmsh.model.occ.addBox(0.0, 0.0, 0.0, length, width, thickness)
+        gmsh.model.add("part")
+        build(gmsh.model.occ)
         gmsh.model.occ.synchronize()
         gmsh.option.setNumber("Mesh.MeshSizeMax", size)
         gmsh.option.setNumber("Mesh.MeshSizeMin", size / 4.0)
@@ -54,7 +75,7 @@ def _cantilever(length=200.0, width=40.0, thickness=10.0, force=1000.0, nu=0.3):
         gmsh.finalize()
 
     fixed = vertices[:, 0] < 1e-6
-    loaded = vertices[:, 0] > length - 1e-6
+    loaded = vertices[:, 0] > loaded_x - 1e-6
     n = len(vertices)
     x = np.concatenate(
         [
@@ -141,14 +162,38 @@ def test_the_peak_diverges_but_the_critical_distance_does_not() -> None:
 
     An elastic peak at a re-entrant corner is singular: refining the mesh
     raises it without bound, so any value states the mesh rather than the part.
+    This needs a re-entrant corner to show it. On the plain cantilever the
+    element peak at the clamp barely moves: measured at h = 2.55, 1.91, 1.53
+    and 1.28 mm it read 275, 293, 299 and 293 MPa against a closed-form 300.
+    So the part here is an L-bracket, meshed at h and at h/2.
+
+    Measured on this bracket over four mesh pairs (h = 2.6 to 3.2 mm, each
+    halved), the peak rose by a factor of 1.43 to 1.67 at the inside corner.
+    Over the same pairs the critical-distance value moved by 0.90 to 1.05,
+    which is noise from where the hottest element lands, with no trend. The
+    bounds below sit outside both ranges.
     """
-    coarse = solve(_cantilever())
-    fine = solve(_cantilever(thickness=10.0))
+    coarse_size, fine_size = 3.0, 1.5
+    coarse_mesh = _l_bracket(coarse_size)
+    fine_mesh = _l_bracket(fine_size)
+    assert len(fine_mesh.vertices) > 3 * len(coarse_mesh.vertices)
+
+    coarse, fine = solve(coarse_mesh), solve(fine_mesh)
 
     for result in (coarse, fine):
         assert result.critical_distance_stress() > 0.0
         # An average over a neighbourhood cannot exceed the maximum in it.
         assert result.critical_distance_stress() <= result.peak_von_mises
+
+    # The peak is the singularity: on the fine mesh it sits at the inside
+    # corner (x = z = 8 mm, the wall's thickness) and has climbed.
+    hottest = fine.element_centroid[fine.element_von_mises.argmax()]
+    assert np.hypot(hottest[0] - 8.0, hottest[2] - 8.0) < 2.0 * fine_size
+    assert fine.peak_von_mises > 1.3 * coarse.peak_von_mises
+
+    # The average does not follow it.
+    ratio = fine.critical_distance_stress() / coarse.critical_distance_stress()
+    assert 0.85 < ratio < 1.15
 
 
 def test_the_dimensionless_target_uses_the_averaged_stress() -> None:

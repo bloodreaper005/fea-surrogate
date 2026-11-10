@@ -23,6 +23,26 @@ SCREENING_SCHEMA = "SurrogateScreening/v1"
 SCREENING_ATTESTATION = "screening_estimate"
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+#: One segment of a field's relative path, exactly as the consumer matches it.
+#: Stricter than "no '..'": a leading dot or underscore, a space, or any
+#: character outside this set is refused on arrival, so it is refused here.
+_PATH_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+#: The consumer's top-level key set: all of these, plus optionally `fields`,
+#: and nothing else. An unknown key is refused there rather than ignored.
+_TOP_KEYS = frozenset({
+    "schema_version",
+    "screened_sha256",
+    "model",
+    "coverage",
+    "calibration",
+    "domain",
+    "predictions",
+    "assumptions",
+    "limitations",
+    "attestation",
+})
+_OPTIONAL_TOP_KEYS = frozenset({"fields"})
 
 
 class ScreeningContractError(ValueError):
@@ -188,14 +208,44 @@ def _require_text_list(value: Any, label: str) -> None:
             raise ScreeningContractError(f"{label} entries must be nonblank strings")
 
 
+def _require_text(value: Any, label: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ScreeningContractError(f"{label} must be a nonblank string")
+
+
 def validate_document(document: Mapping[str, Any]) -> None:
     """Mirror the consumer's parser.
 
     Kept deliberately strict and deliberately duplicated rather than imported:
     this repository does not depend on CAD Agent, and a contract that is only
     enforced on the receiving side is discovered to be broken in the wrong
-    place.
+    place. The rules follow
+    `mech_cad_design_agent.surrogate_screening.parse_surrogate_screening` one
+    for one. A rule that is looser here than there lets this side send a
+    document the consumer refuses on arrival, which is the failure this
+    function exists to prevent.
     """
+    if not isinstance(document, dict):
+        # The consumer parses JSON objects. A mapping that is not a dict would
+        # not survive `json.dumps` in the first place.
+        raise ScreeningContractError("screening document must be an object")
+    keys = set(document)
+    missing = sorted(_TOP_KEYS - keys)
+    unexpected = sorted(keys - _TOP_KEYS - _OPTIONAL_TOP_KEYS)
+    if missing or unexpected:
+        detail = "; ".join(
+            part
+            for part in (
+                f"missing {missing}" if missing else "",
+                f"unexpected {unexpected}" if unexpected else "",
+            )
+            if part
+        )
+        raise ScreeningContractError(
+            f"screening document has an unexpected key set ({detail}); "
+            f"it carries exactly {sorted(_TOP_KEYS)} plus optional 'fields'. "
+            "Extra context belongs in assumptions or limitations"
+        )
     if document.get("schema_version") != SCREENING_SCHEMA:
         raise ScreeningContractError("schema_version is incompatible")
     if document.get("attestation") != SCREENING_ATTESTATION:
@@ -228,6 +278,7 @@ def validate_document(document: Mapping[str, Any]) -> None:
         or cal["set_size"] < 1
     ):
         raise ScreeningContractError("calibration set_size must be a positive integer")
+    _require_text(cal["method"], "calibration method")
     _require_digest(cal["set_sha256"], "calibration set_sha256")
 
     domain = document.get("domain")
@@ -287,12 +338,20 @@ def _validate_fields(fields: Any) -> None:
         "image_relative_path",
         "image_sha256",
     }
+    seen: set[str] = set()
     for item in fields:
         if not isinstance(item, dict) or set(item) != required:
             # interval_relative_path is required alongside the values: a
             # rendered field with no per-node band is the one artifact this
             # subsystem must not produce.
             raise ScreeningContractError("field entry is incomplete")
+        quantity = item["quantity"]
+        _require_text(quantity, "field quantity")
+        if quantity in seen:
+            # Two fields under one name leave the consumer no way to say which
+            # one an image or interval belongs to.
+            raise ScreeningContractError("field quantities must be unique")
+        seen.add(quantity)
         _require_digest(item["mesh_sha256"], "field mesh_sha256")
         _require_digest(item["image_sha256"], "field image_sha256")
         for key in (
@@ -305,8 +364,14 @@ def _validate_fields(fields: Any) -> None:
                 raise ScreeningContractError(f"field {key} must be nonblank")
             if "\\" in value or value.startswith("/") or ":" in value:
                 raise ScreeningContractError(f"field {key} must be a relative path")
-            if any(part in {"", ".", ".."} for part in value.split("/")):
-                raise ScreeningContractError(f"field {key} must be a safe path")
+            if not all(_PATH_SEGMENT.fullmatch(part) for part in value.split("/")):
+                # Covers "", "." and ".." as well: none starts with a letter
+                # or digit. Rename the file to letters, digits, '.', '_' or
+                # '-', starting with a letter or digit.
+                raise ScreeningContractError(
+                    f"field {key} must be a safe path: every segment must match "
+                    f"{_PATH_SEGMENT.pattern}"
+                )
 
 
 __all__ = [

@@ -159,6 +159,23 @@ def _face_values(values: np.ndarray, faces: np.ndarray) -> np.ndarray:
     return values[faces].mean(axis=1)
 
 
+def _unclip(axis) -> None:  # noqa: ANN001 - matplotlib Axes3D
+    """Let every artist on a 3D axes draw past the axes' own rectangle.
+
+    A 3D axes clips its artists to its 2D bounding box. `_draw_surface` then
+    zooms the box aspect so the part fills the panel, and a long part projects
+    wider than that box: the ends of a bracket were cut off by a straight
+    vertical line in every solved render. The limits and box aspect still
+    frame the part. Clipping only removes the parts that fall outside the
+    rectangle, so it is turned off rather than the zoom being reduced.
+    """
+    for artist in (
+        list(axis.collections) + list(axis.lines)
+        + list(axis.texts) + list(axis.patches)
+    ):
+        artist.set_clip_on(False)
+
+
 def _draw_surface(
     axis,  # noqa: ANN001 - matplotlib Axes3D
     vertices: np.ndarray,
@@ -229,6 +246,9 @@ def _draw_surface(
         axis.set_box_aspect(tuple(extent / extent.max()))
     except AttributeError:  # pragma: no cover - very old matplotlib
         pass
+    # After the framing, so a caller that frames again still inherits it. A
+    # caller that adds its own artists afterwards calls `_unclip` itself.
+    _unclip(axis)
 
 
 def _stamp(figure, coverage: float, model_name: str, model_version: str,
@@ -465,6 +485,7 @@ def render_load_case(
                      s=14, c="#b3261e", depthshade=False, label="loaded", zorder=5)
         axis.quiver(*arrow[0], *arrow[1], color="#b3261e",
                     linewidth=2.6, arrow_length_ratio=0.3, zorder=6)
+    _unclip(axis)
     axis.legend(loc="upper right", fontsize=8, frameon=False)
     figure.text(
         0.5, 0.965, "SCREENING LOAD CASE — INPUTS, NOT RESULTS",
@@ -565,6 +586,9 @@ def render_faces(
                   color="#111111", ha="center", va="center", zorder=12,
                   bbox=dict(boxstyle="round,pad=0.18", facecolor="#ffffff",
                             edgecolor="#555555", linewidth=0.5, alpha=0.9))
+    # The labels sit outside the part on purpose, which is exactly where the
+    # axes rectangle would cut them off.
+    _unclip(axis)
 
     figure.text(0.5, 0.965, "FACES — name one to hold it or load it",
                 ha="center", va="top", fontsize=11, fontweight="bold",
@@ -587,8 +611,6 @@ def field_or_refuse(surrogate, data):  # noqa: ANN001
     would produce a uniform plot that looks exactly like a prediction. The
     contract's own rule applies: a point estimate is refused, not widened.
     """
-    import torch
-
     from .versions import SFEM_V1
 
     if surrogate.version != SFEM_V1:
@@ -597,6 +619,8 @@ def field_or_refuse(surrogate, data):  # noqa: ANN001
             "pooled value; there is no per-node field to render. Training a "
             "nodal head against the sweep's y_nodal labels is what unlocks this."
         )
+    import torch        # only a nodal head gets this far; a refusal needs no torch
+
     with torch.no_grad():
         return surrogate.normaliser.decode(
             surrogate.model(data).reshape(-1)

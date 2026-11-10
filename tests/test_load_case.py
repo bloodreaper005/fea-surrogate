@@ -286,3 +286,197 @@ def test_a_part_with_planar_faces_still_prefers_them() -> None:
     why = propose(mixed)["why"]["fixed"]
 
     assert "face 2" in why and "largest planar face" in why
+
+
+# --- Input hardening ---------------------------------------------------------
+#
+# Each of these was accepted before, measured by probing `parse` directly, and
+# each one either screened a different problem from the one stated or failed
+# later with an error that did not say what to change.
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+def test_a_non_finite_magnitude_is_refused(bad) -> None:
+    """inf > 0 is True, so an infinite force passed the positivity check."""
+    with pytest.raises(LoadCaseError, match="magnitude_n must be finite"):
+        parse(_minimal(load={"faces": [1], "magnitude_n": bad}), _solid())
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("nan")])
+def test_a_non_finite_pressure_is_refused(bad) -> None:
+    with pytest.raises(LoadCaseError, match="pressure_mpa must be finite"):
+        parse(_minimal(load={"faces": [1], "pressure_mpa": bad}), _solid())
+
+
+def test_a_nan_direction_is_refused() -> None:
+    """norm == 0.0 is False for NaN, so it was normalised to (nan, nan, nan)."""
+    with pytest.raises(LoadCaseError, match="direction component must be finite"):
+        parse(
+            _minimal(load={"faces": [1], "magnitude_n": 10.0,
+                           "direction": [float("nan"), 0.0, 0.0]}),
+            _solid(),
+        )
+
+
+@pytest.mark.parametrize("key", ["magnitude_n", "pressure_mpa"])
+def test_a_boolean_magnitude_is_refused(key) -> None:
+    """True is an int, and arrived as a 1 N load."""
+    with pytest.raises(LoadCaseError, match="must be a number"):
+        parse(_minimal(load={"faces": [1], key: True}), _solid())
+
+
+def test_a_non_numeric_magnitude_is_a_load_case_error() -> None:
+    """It used to escape as a bare ValueError from float()."""
+    with pytest.raises(LoadCaseError, match="magnitude_n must be a number"):
+        parse(_minimal(load={"faces": [1], "magnitude_n": "abc"}), _solid())
+
+
+def test_a_numeric_string_magnitude_is_still_accepted() -> None:
+    assert parse(
+        _minimal(load={"faces": [1], "magnitude_n": "500"}), _solid()
+    ).load.magnitude_n == 500.0
+
+
+@pytest.mark.parametrize("bad", [1.7, float("nan"), True, "one"])
+def test_a_non_integral_face_tag_is_refused(bad) -> None:
+    """int(1.7) is 1, so a typo silently loaded the wrong face."""
+    with pytest.raises(LoadCaseError, match="face tags must be integers"):
+        parse(_minimal(load={"faces": [bad], "magnitude_n": 10.0}), _solid())
+
+
+def test_an_integral_float_face_tag_is_accepted() -> None:
+    """JSON writers that emit 3.0 for 3 still name face 3."""
+    assert parse(
+        _minimal(load={"faces": [3.0], "magnitude_n": 10.0}), _solid()
+    ).load.faces == (3,)
+
+
+def test_a_repeated_face_is_counted_once() -> None:
+    """Twice the area meant twice the stated pressure, applied silently."""
+    case = parse(
+        _minimal(load={"faces": [1, 1], "pressure_mpa": 1.0, "direction": [0, 0, -1]}),
+        _solid(),
+    )
+
+    assert case.load.faces == (1,)
+    assert case.load.area_mm2 == 800.0
+    assert case.load.magnitude_n == pytest.approx(800.0)
+
+
+def test_repeated_held_faces_are_counted_once() -> None:
+    assert parse(_minimal(fixed={"faces": [2, 2]}), _solid()).fixed == {"faces": [2]}
+
+
+@pytest.mark.parametrize("key", ["magnitude_n", "pressure_mpa"])
+def test_an_unknown_load_face_is_a_load_case_error(key) -> None:
+    """A force on face 99 used to pass; a pressure raised the CAD layer's error."""
+    with pytest.raises(LoadCaseError, match="face 99.*faces are 1, 2, 3"):
+        parse(_minimal(load={"faces": [99], key: 10.0}), _solid())
+
+
+def test_an_unknown_face_without_a_solid_is_left_to_the_solver() -> None:
+    """With no part to check against there is nothing to refuse yet."""
+    assert parse(_minimal(load={"faces": [99], "magnitude_n": 10.0})).load.faces == (99,)
+
+
+def test_a_load_on_held_faces_only_is_refused() -> None:
+    """The solver drops loads on constrained freedoms: no stress at all."""
+    with pytest.raises(LoadCaseError, match="acts only on held faces"):
+        parse(
+            _minimal(fixed={"faces": [1, 2]},
+                     load={"faces": [1], "magnitude_n": 10.0}),
+            _solid(),
+        )
+
+
+def test_a_load_that_also_touches_a_free_face_is_accepted() -> None:
+    case = parse(
+        _minimal(fixed={"faces": [2]}, load={"faces": [2, 1], "magnitude_n": 10.0}),
+        _solid(),
+    )
+
+    assert case.load.faces == (2, 1)
+
+
+def test_a_misspelt_gravity_key_is_refused() -> None:
+    """'enable' used to switch the self-weight check off without a word."""
+    with pytest.raises(LoadCaseError, match="unexpected \\['enable'\\] in gravity"):
+        parse(
+            _minimal(material={"density_kg_m3": 7850.0}, gravity={"enable": True}),
+            _solid(),
+        )
+
+
+@pytest.mark.parametrize("bad", [True, "yes", [1]])
+def test_gravity_must_be_an_object(bad) -> None:
+    """A bare True crashed with AttributeError instead of saying what to send."""
+    with pytest.raises(LoadCaseError, match="gravity must be an object"):
+        parse(_minimal(gravity=bad), _solid())
+
+
+def test_gravity_enabled_must_be_a_boolean() -> None:
+    with pytest.raises(LoadCaseError, match="true or false"):
+        parse(
+            _minimal(material={"density_kg_m3": 7850.0}, gravity={"enabled": "no"}),
+            _solid(),
+        )
+
+
+def test_no_gravity_block_and_a_disabled_one_are_both_accepted() -> None:
+    assert parse(_minimal(gravity=None), _solid()).self_weight_n is None
+    assert parse(_minimal(gravity={"enabled": False}), _solid()).self_weight_n is None
+
+
+@pytest.mark.parametrize("density", [-7850.0, 0.0])
+def test_a_non_positive_density_is_refused(density) -> None:
+    """A negative weight passed the 5% test however heavy the part was."""
+    with pytest.raises(LoadCaseError, match="density_kg_m3 must be positive"):
+        parse(
+            _minimal(material={"density_kg_m3": density}, gravity={"enabled": True}),
+            _solid(),
+        )
+
+
+@pytest.mark.parametrize("g", [-9.8, 0.0, float("nan")])
+def test_a_non_positive_or_non_finite_g_is_refused(g) -> None:
+    with pytest.raises(LoadCaseError, match="gravity.g"):
+        parse(
+            _minimal(material={"density_kg_m3": 7850.0},
+                     gravity={"enabled": True, "g": g}),
+            _solid(),
+        )
+
+
+@pytest.mark.parametrize("nu", [0.5, -1.0, float("nan")])
+def test_an_inadmissible_poisson_ratio_is_refused(nu) -> None:
+    with pytest.raises(LoadCaseError, match="poisson_ratio"):
+        parse(_minimal(material={"poisson_ratio": nu}), _solid())
+
+
+@pytest.mark.parametrize("modulus", [0.0, -1.0, float("inf")])
+def test_an_inadmissible_youngs_modulus_is_refused(modulus) -> None:
+    with pytest.raises(LoadCaseError, match="youngs_modulus_mpa"):
+        parse(_minimal(material={"youngs_modulus_mpa": modulus}), _solid())
+
+
+def test_loads_given_as_one_object_says_so() -> None:
+    """It used to get the two-load-sets explanation, about a case nobody gave."""
+    with pytest.raises(LoadCaseError, match="not a single object") as raised:
+        parse(
+            {"fixed": {"faces": [2]}, "loads": {"faces": [1], "magnitude_n": 5.0}},
+            _solid(),
+        )
+
+    assert "maximum of a sum" not in str(raised.value)
+
+
+def test_an_empty_loads_list_says_so() -> None:
+    with pytest.raises(LoadCaseError, match="'loads' is empty") as raised:
+        parse({"fixed": {"faces": [2]}, "loads": []}, _solid())
+
+    assert "maximum of a sum" not in str(raised.value)
+
+
+def test_loads_given_as_text_says_so() -> None:
+    with pytest.raises(LoadCaseError, match="must be a list"):
+        parse({"fixed": {"faces": [2]}, "loads": "face 1, 500 N"}, _solid())

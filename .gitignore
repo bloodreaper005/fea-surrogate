@@ -21,5 +21,6 @@ checkpoints/
 data/
 datasets/
 dist/
+fea_results/
 runs/
 models/

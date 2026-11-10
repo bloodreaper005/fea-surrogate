@@ -288,6 +288,7 @@ def test_face_labels_are_lifted_clear_of_the_part(tmp_path) -> None:
 
 
 def test_a_mesh_without_a_face_map_cannot_be_drawn_by_face(tmp_path) -> None:
+    pytest.importorskip("torch", reason="features (the training mesher) imports torch")
     from fea_surrogate.features import ScaledMesh
     from fea_surrogate.render import render_faces
 
@@ -296,3 +297,105 @@ def test_a_mesh_without_a_face_map_cannot_be_drawn_by_face(tmp_path) -> None:
 
     with pytest.raises(ScreeningContractError, match="face-to-node map"):
         render_faces(object(), bare, out_dir=tmp_path)
+
+
+def _long_bar(length: float = 300.0, side: float = 20.0):
+    """A closed box fifteen times longer than it is wide."""
+    vertices = np.array(
+        [[x, y, z] for x in (0.0, length) for y in (0.0, side) for z in (0.0, side)]
+    )
+    faces = np.array([
+        [0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5], [0, 4, 5], [0, 5, 1],
+        [2, 3, 7], [2, 7, 6], [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3],
+    ])
+    return vertices, faces
+
+
+def test_the_drawn_surface_is_not_clipped_to_the_axes_box() -> None:
+    """A long part projects wider than its square axes and lost its ends.
+
+    The bracket's wall plate was cut off by a straight vertical line in every
+    solved render, because a 3D axes clips its artists to its own rectangle.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from fea_surrogate.render import _draw_surface
+
+    vertices, faces = _long_bar()
+    figure = plt.figure(figsize=(6.0, 4.0), dpi=100)
+    try:
+        axis = figure.add_subplot(1, 1, 1, projection="3d")
+        refused = np.zeros(len(faces), dtype=bool)
+        refused[:2] = True        # both collections: the plain and the hatched
+        _draw_surface(axis, vertices, faces,
+                      np.tile((1.0, 0.0, 0.0, 1.0), (len(faces), 1)), refused)
+
+        assert len(axis.collections) == 2
+        assert not any(c.get_clip_on() for c in axis.collections)
+
+        # And it shows in the pixels: the part reaches past the axes rectangle.
+        figure.canvas.draw()
+        pixels = np.asarray(figure.canvas.buffer_rgba())[:, :, :3].astype(int)
+        drawn = np.where(
+            ((pixels[:, :, 0] > 150) & (pixels[:, :, 1] < 100)).any(axis=0)
+        )[0]
+        box = axis.get_window_extent()
+        assert drawn.min() < box.x0 or drawn.max() > box.x1
+    finally:
+        plt.close(figure)
+
+
+def test_the_box_aspect_still_follows_the_part() -> None:
+    """Unclipping must not undo the framing that lets the part fill the panel."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from fea_surrogate.render import _draw_surface
+
+    vertices, faces = _long_bar()
+    figure = plt.figure()
+    try:
+        axis = figure.add_subplot(1, 1, 1, projection="3d")
+        _draw_surface(axis, vertices, faces,
+                      np.tile((0.5, 0.5, 0.5, 1.0), (len(faces), 1)),
+                      np.zeros(len(faces), dtype=bool))
+        aspect = np.asarray(axis.get_box_aspect(), dtype=float)
+        aspect = aspect / aspect.max()
+        np.testing.assert_allclose(aspect, [1.0, 20.0 / 300.0, 20.0 / 300.0],
+                                   rtol=1e-6)
+    finally:
+        plt.close(figure)
+
+
+def test_the_load_case_marks_are_not_clipped_either(tmp_path, monkeypatch) -> None:
+    """The arrow and the held and loaded points sit at the part's edges."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    kept = []
+    really_close = plt.close
+    monkeypatch.setattr(plt, "close", lambda figure=None: kept.append(figure))
+    vertices, faces = _long_bar()
+
+    render_load_case(
+        out_dir=tmp_path,
+        vertices=vertices,
+        faces=faces,
+        fixed_mask=vertices[:, 0] == 0.0,
+        loaded_mask=vertices[:, 0] == 300.0,
+        load_direction=(0.0, 0.0, -1.0),
+        origin="test",
+    )
+
+    (figure,) = kept
+    try:
+        axis = next(a for a in figure.axes if a.name == "3d")
+        artists = list(axis.collections) + list(axis.lines)
+        assert len(axis.collections) >= 3     # surface, held, loaded (+ arrow)
+        assert not any(a.get_clip_on() for a in artists)
+    finally:
+        really_close(figure)

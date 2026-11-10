@@ -1,8 +1,9 @@
 """Solving an imported part, and keeping it visibly apart from an estimate.
 
 Screening is triage that aims an expensive check at the right candidate. This is
-that check, and it is cheaper than the framing suggested -- 60 ms to screen an
-11,000-node bracket against 3.5 s to solve it outright.
+the check its coverage is defined against: about 1 s to screen an 11,000-node
+bracket end to end (the model call is about 60 ms; the rest is meshing) against
+about 4 s to solve it with the label solver.
 
 The two failures worth catching are a load case corrupted on its way through the
 adapter, so the solve answers a different question from the screen, and a solved

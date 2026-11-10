@@ -55,8 +55,9 @@ Samples are concatenated with offset arrays rather than stored ragged. Each
 | `y_nodal` | (sum N,) | von Mises averaged onto nodes — the field |
 | `tetrahedra` | (sum M, 4) | offset into the shard; subtract `node_offsets[i]` |
 | `node_offsets`, `tet_offsets` | (S+1,) | sample boundaries |
-| `tau` | (S,) | **the training target**: dimensionless peak |
-| `peak` | (S,) | peak von Mises from unaveraged element stresses |
+| `tau` | (S,) | **the training target**: dimensionless critical-distance von Mises (volume-averaged, see below) |
+| `tau_peak` | (S,) | the same scaling applied to `peak`; kept for comparison, not the target |
+| `peak` | (S,) | peak von Mises from unaveraged element stresses, in MPa |
 | `poisson`, `force_n`, `length_mm`, `family` | (S,) | per-sample scalars |
 
 Node features are `[pos(3) | sdf(1) | normal(3) | is_fixed(1) | is_loaded(1) |
@@ -70,10 +71,17 @@ answer "what is the stress in this part, under this load, applied here", because
 samples differing only in load placement have identical inputs and different
 answers; the best any model can do there is predict their mean.
 
-**The target is dimensionless.** `tau = sigma * L^2 / F`, with `L` the
-bounding-box diagonal. In linear elasticity the stress field is independent of
-Young's modulus — E only sets displacement — and scales as F/L². So a model
-fitted here transfers across scale, load and stiffness. Recover stress with
+**The target is dimensionless and averaged.** `tau = sigma * L^2 / F`, with
+`L` the bounding-box diagonal and `sigma` the critical-distance stress: element
+von Mises averaged by volume over every element whose centroid lies within one
+thin dimension (`min(smallest bounding-box extent, 2V/A)`) of the hottest
+element. It is not the peak. An elastic peak at a re-entrant corner is singular
+and keeps rising as the mesh is refined, so it states the mesh rather than the
+part; the average does not. In bending it averages across the section and so
+reads well below the surface stress.
+
+In linear elasticity the stress field is independent of Young's modulus — E
+only sets displacement — and scales as F/L². So a model fitted here transfers across scale, load and stiffness. Recover stress with
 `sigma[MPa] = tau * F[N] / L[mm]^2`.
 
 Poisson's ratio does *not* cancel, because the held faces are displacement
@@ -82,8 +90,10 @@ boundary conditions. It is swept over {poisson_range} and is a feature.
 ## Limitations
 
 - Constant-strain tetrahedra (P1). Against a closed-form cantilever the element
-  peak reaches ~0.92 of the analytical answer at the meshing used here. Peak
-  stress is a consistent training signal, not a certified value.
+  peak reaches ~0.92 of the analytical answer at the meshing used here, while
+  the beam's bending away from the root is under-read, because P1 is stiff in
+  bending. `tau` is a consistent training signal on this solver and mesh rule,
+  not a certified value.
 - One load case per sample: a single uniform traction over the tagged faces.
   Not contact, not moving loads, not distributed pressure fields.
 - Linear elastic only. No plasticity, no large displacement, no buckling.

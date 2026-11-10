@@ -229,3 +229,151 @@ def test_per_family_set_size_is_reported_not_the_total() -> None:
     )
 
     assert calibration.for_family("pulley").set_size == 100
+
+
+# --- The producer mirrors the consumer rule for rule -------------------------
+#
+# Each mutation below produced a document this side accepted and the consumer
+# refused on arrival, measured against
+# mech_cad_design_agent.surrogate_screening.parse_surrogate_screening. A rule
+# that is looser here than there is discovered in the wrong place.
+
+
+def _field(**overrides: Any) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "quantity": "von_mises",
+        "mesh_sha256": DIGEST,
+        "values_relative_path": "screening/field_values.npy",
+        "interval_relative_path": "screening/field_interval.npy",
+        "image_relative_path": "screening/field.png",
+        "image_sha256": DIGEST,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def _valid() -> dict[str, Any]:
+    return _document(fields=[_field()])
+
+
+def _with(**changes: Any):
+    def mutate(document: dict[str, Any]) -> None:
+        document.update(changes)
+    return mutate
+
+
+def _calibration_method(value: Any):
+    def mutate(document: dict[str, Any]) -> None:
+        document["calibration"]["method"] = value
+    return mutate
+
+
+def _fields(*entries: dict[str, Any]):
+    def mutate(document: dict[str, Any]) -> None:
+        document["fields"] = list(entries)
+    return mutate
+
+
+def _drop(key: str):
+    def mutate(document: dict[str, Any]) -> None:
+        del document[key]
+    return mutate
+
+
+_CONSUMER_REFUSES = {
+    "extra top-level key": (_with(neighbours=[]), "unexpected key set"),
+    "missing top-level key": (_drop("limitations"), "unexpected key set"),
+    "blank calibration method": (_calibration_method("  "), "calibration method"),
+    "non-string calibration method": (_calibration_method(3), "calibration method"),
+    "duplicate field quantity": (
+        _fields(_field(), _field(values_relative_path="other_values.npy")),
+        "field quantities must be unique",
+    ),
+    "blank field quantity": (_fields(_field(quantity=" ")), "field quantity"),
+    "non-string field quantity": (_fields(_field(quantity=7)), "field quantity"),
+    "space in a path segment": (
+        _fields(_field(image_relative_path="screening/my field.png")), "safe path"
+    ),
+    "leading underscore": (
+        _fields(_field(values_relative_path="_values.npy")), "safe path"
+    ),
+    "leading dot": (_fields(_field(values_relative_path=".values.npy")), "safe path"),
+    "empty segment": (
+        _fields(_field(values_relative_path="screening//v.npy")), "safe path"
+    ),
+    "segment over 128 characters": (
+        _fields(_field(values_relative_path="v" * 129)), "safe path"
+    ),
+    "non-ascii segment": (
+        _fields(_field(values_relative_path="spannung_ü.npy")), "safe path"
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_CONSUMER_REFUSES))
+def test_the_producer_refuses_what_the_consumer_refuses(case: str) -> None:
+    mutate, message = _CONSUMER_REFUSES[case]
+    document = _valid()
+    mutate(document)
+
+    with pytest.raises(ScreeningContractError, match=message):
+        validate_document(document)
+
+
+def test_a_valid_document_with_fields_passes_and_fields_stay_optional() -> None:
+    validate_document(_valid())
+    validate_document(_document())
+
+
+def test_a_path_segment_may_use_dots_dashes_and_underscores_inside() -> None:
+    document = _document(
+        fields=[_field(values_relative_path="run-2.v_1/field.values.npy")]
+    )
+
+    validate_document(document)
+
+
+def test_a_non_dict_document_is_refused() -> None:
+    from types import MappingProxyType
+
+    with pytest.raises(ScreeningContractError, match="must be an object"):
+        validate_document(MappingProxyType(_document()))
+
+
+def test_the_key_set_refusal_names_what_is_wrong() -> None:
+    document = _document()
+    document["neighbours"] = []
+    del document["domain"]
+
+    with pytest.raises(ScreeningContractError) as raised:
+        validate_document(document)
+
+    assert "missing ['domain']" in str(raised.value)
+    assert "unexpected ['neighbours']" in str(raised.value)
+
+
+def test_appending_assumptions_after_building_still_validates() -> None:
+    """What `server.surrogate_screen` does: more assumptions, no new keys."""
+    document = _document()
+    document["assumptions"] = list(document["assumptions"]) + [
+        "held faces proposed, not stated by the caller -- confirm before "
+        "treating this as your load case"
+    ]
+
+    validate_document(document)
+
+
+def test_the_consumer_agrees_on_every_case() -> None:
+    """Run the same documents through the real consumer when it is installed."""
+    pytest.importorskip("mech_cad_design_agent", reason="consumer not on the path")
+    from mech_cad_design_agent.surrogate_screening import parse_surrogate_screening
+    from mech_cad_design_agent.workspace_bootstrap import BootstrapFailure
+
+    parse_surrogate_screening(_valid())
+    parse_surrogate_screening(_document())
+    for case, (mutate, _) in _CONSUMER_REFUSES.items():
+        document = _valid()
+        mutate(document)
+        with pytest.raises(BootstrapFailure):
+            parse_surrogate_screening(document)
+            pytest.fail(f"the consumer accepted: {case}")

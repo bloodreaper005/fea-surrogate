@@ -26,7 +26,9 @@ edge, so it travels as an assumption rather than as a fact.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
+from numbers import Integral, Real
 from typing import Any, Mapping, Sequence
 
 
@@ -60,6 +62,7 @@ _LOAD_KEYS = frozenset({"faces", "direction", "magnitude_n", "pressure_mpa"})
 _MATERIAL_KEYS = frozenset(
     {"poisson_ratio", "density_kg_m3", "youngs_modulus_mpa", "name"}
 )
+_GRAVITY_KEYS = frozenset({"enabled", "g"})
 
 
 @dataclass(frozen=True)
@@ -133,10 +136,29 @@ class LoadCase:
         return out
 
 
+def _number(value: Any, label: str) -> float:
+    """A finite real number, or a refusal that names the field.
+
+    `bool` is an int subclass, so `True` would otherwise arrive as 1 N. A
+    non-finite value would pass every sign check (`inf > 0`, and NaN fails
+    every comparison silently) and reach the solver as a load or a modulus.
+    Numeric strings stay accepted, as `float()` always accepted them.
+    """
+    if isinstance(value, bool):
+        raise LoadCaseError(f"{label} must be a number, not {value!r}")
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise LoadCaseError(f"{label} must be a number, not {value!r}") from None
+    if not math.isfinite(number):
+        raise LoadCaseError(f"{label} must be finite, not {value!r}")
+    return number
+
+
 def _unit(vector: Any, role: str) -> tuple[float, float, float]:
     if not isinstance(vector, Sequence) or isinstance(vector, (str, bytes)):
         raise LoadCaseError(f"{role} direction must be three numbers")
-    values = [float(v) for v in vector]
+    values = [_number(v, f"{role} direction component") for v in vector]
     if len(values) != 3:
         raise LoadCaseError(f"{role} direction must be three numbers")
     norm = sum(v * v for v in values) ** 0.5
@@ -154,7 +176,54 @@ def _faces(spec: Any, role: str) -> tuple[int, ...]:
         spec = [spec]
     if not isinstance(spec, Sequence) or isinstance(spec, (str, bytes)) or not spec:
         raise LoadCaseError(f"{role} must name at least one face, as a list of tags")
-    return tuple(int(t) for t in spec)
+    tags = [_tag(t, role) for t in spec]
+    # Order kept, repeats dropped. A face named twice is one face: counting it
+    # twice doubled the area a pressure was resolved over, while the solver's
+    # node mask spread the result over the real area once -- twice the stated
+    # pressure, applied silently.
+    return tuple(dict.fromkeys(tags))
+
+
+def _tag(value: Any, role: str) -> int:
+    """One face tag. `int()` alone turned face 1.7 into face 1."""
+    if isinstance(value, bool):
+        raise LoadCaseError(f"{role} face tags must be integers, not {value!r}")
+    if isinstance(value, Integral):
+        return int(value)
+    if isinstance(value, Real):
+        number = float(value)
+        if math.isfinite(number) and number.is_integer():
+            return int(number)
+        raise LoadCaseError(
+            f"{role} face tags must be integers, not {value!r}; use the tags "
+            "listed by surrogate_inspect_cad"
+        )
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            pass
+    raise LoadCaseError(
+        f"{role} face tags must be integers, not {value!r}; use the tags "
+        "listed by surrogate_inspect_cad"
+    )
+
+
+def _known_faces(faces: Sequence[int], solid, role: str) -> None:  # noqa: ANN001
+    """Refuse a tag the part does not have, as a load-case error.
+
+    Checked against `solid.faces` rather than through `solid.face()`, which
+    raises the CAD layer's own error type: an unknown tag is a mistake in the
+    load case, and the caller should be able to catch it as one.
+    """
+    known = [f.tag for f in solid.faces]
+    present = set(known)
+    unknown = [t for t in faces if t not in present]
+    if unknown:
+        raise LoadCaseError(
+            f"{role} names face {', '.join(map(str, unknown))}, which this part "
+            f"does not have; its faces are {', '.join(map(str, known))}"
+        )
 
 
 def _check_keys(value: Any, allowed: frozenset[str], role: str) -> Mapping[str, Any]:
@@ -191,7 +260,22 @@ def parse(document: Mapping[str, Any], solid=None) -> LoadCase:  # noqa: ANN001
         raise LoadCaseError("give either 'load' or 'loads', not both")
     if "loads" in document:
         entries = document["loads"]
-        if not isinstance(entries, Sequence) or len(entries) != 1:
+        if isinstance(entries, Mapping):
+            raise LoadCaseError(
+                "'loads' must be a list of load objects, not a single object; "
+                "give one load as 'load': {...} or as 'loads': [{...}]"
+            )
+        if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+            raise LoadCaseError(
+                "'loads' must be a list holding one load object, e.g. "
+                "'loads': [{\"faces\": [6], \"magnitude_n\": 500}]"
+            )
+        if not entries:
+            raise LoadCaseError(
+                "'loads' is empty; a load case needs one load, e.g. "
+                "'loads': [{\"faces\": [6], \"magnitude_n\": 500}]"
+            )
+        if len(entries) != 1:
             raise LoadCaseError(
                 "exactly one load set is supported. Fields superpose in linear "
                 "elasticity, but the screened quantity is a critical-distance "
@@ -215,12 +299,28 @@ def parse(document: Mapping[str, Any], solid=None) -> LoadCase:  # noqa: ANN001
 
     stated = {"fixed"}
     fixed = document["fixed"]
+    held_faces: tuple[int, ...] | None = None    # None for a geometric selector
     if isinstance(fixed, Mapping) and set(fixed) & {"centroid", "radial"}:
         fixed_spec: Mapping[str, Any] = dict(fixed)
     else:
-        fixed_spec = {"faces": list(_faces(fixed, "fixed"))}
+        held_faces = _faces(fixed, "fixed")
+        fixed_spec = {"faces": list(held_faces)}
 
     faces = _faces(load_spec.get("faces"), "the load")
+    if solid is not None:
+        # Held faces are not checked here: an absent held face is refused by
+        # the face selector when the problem is posed on the mesh, with its own
+        # message, and the solve path's tests pin that.
+        _known_faces(faces, solid, "the load")
+    if held_faces is not None and set(faces) <= set(held_faces):
+        # Every loaded node would be clamped, the solver drops loads on
+        # constrained freedoms, and the answer is a part with no stress in it
+        # that looks perfectly healthy.
+        raise LoadCaseError(
+            f"the load acts only on held faces ({', '.join(map(str, faces))}); "
+            "a load on a fixed face goes straight into the support and stresses "
+            "nothing. Load a face that is not held."
+        )
     if "direction" in load_spec:
         direction = _unit(load_spec["direction"], "the load")
         stated.add("load_direction")
@@ -232,6 +332,7 @@ def parse(document: Mapping[str, Any], solid=None) -> LoadCase:  # noqa: ANN001
     if pressure is not None and magnitude_n is not None:
         raise LoadCaseError("give either magnitude_n or pressure_mpa, not both")
     if pressure is not None:
+        pressure = _number(pressure, "pressure_mpa")
         if solid is None:
             raise LoadCaseError(
                 "a pressure needs the loaded faces' area; inspect the CAD first"
@@ -240,7 +341,9 @@ def parse(document: Mapping[str, Any], solid=None) -> LoadCase:  # noqa: ANN001
         magnitude = float(pressure) * float(area)
     else:
         area = None
-        magnitude = float(magnitude_n or 0.0)
+        magnitude = (
+            0.0 if magnitude_n is None else _number(magnitude_n, "magnitude_n")
+        )
     if not magnitude > 0.0:
         raise LoadCaseError("the load must be a positive force or pressure")
 
@@ -249,21 +352,61 @@ def parse(document: Mapping[str, Any], solid=None) -> LoadCase:  # noqa: ANN001
     if raw_poisson is None:
         poisson = 0.3
     else:
-        poisson = float(raw_poisson)
+        poisson = _number(raw_poisson, "material.poisson_ratio")
+        if not -1.0 < poisson < 0.5:
+            raise LoadCaseError(
+                f"material.poisson_ratio {poisson:g} is not a linear elastic "
+                "material: it must lie strictly between -1 and 0.5"
+            )
         stated.add("poisson_ratio")
 
+    modulus = material.get("youngs_modulus_mpa")
+    if modulus is not None:
+        modulus = _number(modulus, "material.youngs_modulus_mpa")
+        if not modulus > 0.0:
+            raise LoadCaseError("material.youngs_modulus_mpa must be positive")
+
     density = material.get("density_kg_m3")
-    gravity = document.get("gravity") or {}
-    self_weight = None
+    if density is not None:
+        density = _number(density, "material.density_kg_m3")
+        if not density > 0.0:
+            # A negative density gives a negative self-weight, which passes
+            # the negligibility test however heavy the part is.
+            raise LoadCaseError("material.density_kg_m3 must be positive")
+
+    raw_gravity = document.get("gravity")
+    if raw_gravity is None:
+        raw_gravity = {}
+    if not isinstance(raw_gravity, Mapping):
+        raise LoadCaseError(
+            "gravity must be an object such as {\"enabled\": true, \"g\": 9.80665}"
+            f", not {raw_gravity!r}"
+        )
+    # Key-checked like every other block: a misspelt 'enable' used to switch
+    # the self-weight check off without a word.
+    gravity = _check_keys(raw_gravity, _GRAVITY_KEYS, "gravity")
+    enabled = gravity.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise LoadCaseError(
+            f"gravity.enabled must be true or false, not {enabled!r}"
+        )
     g = None
-    if gravity.get("enabled"):
+    if gravity.get("g") is not None:
+        g = _number(gravity["g"], "gravity.g")
+        if not g > 0.0:
+            raise LoadCaseError(
+                "gravity.g is the magnitude of the acceleration in m/s^2 and "
+                "must be positive"
+            )
+    self_weight = None
+    if enabled:
         if density is None:
             raise LoadCaseError("gravity needs material.density_kg_m3")
         if solid is None:
             raise LoadCaseError(
                 "gravity needs the part's volume; inspect the CAD first"
             )
-        g = float(gravity.get("g", 9.80665))
+        g = 9.80665 if g is None else g
         weight = float(density) * float(solid.volume) * _MM3_TO_M3 * g
         share = weight / magnitude
         if share >= GRAVITY_NEGLIGIBLE_FRACTION:
@@ -287,13 +430,9 @@ def parse(document: Mapping[str, Any], solid=None) -> LoadCase:  # noqa: ANN001
             area_mm2=area,
         ),
         poisson_ratio=poisson,
-        youngs_modulus_mpa=(
-            float(material["youngs_modulus_mpa"])
-            if material.get("youngs_modulus_mpa") is not None
-            else None
-        ),
-        density_kg_m3=float(density) if density is not None else None,
-        gravity_mps2=g,
+        youngs_modulus_mpa=modulus,
+        density_kg_m3=density,
+        gravity_mps2=g if enabled else None,
         self_weight_n=self_weight,
         material_name=material.get("name"),
         stated=frozenset(stated),

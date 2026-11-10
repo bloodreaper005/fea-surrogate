@@ -25,12 +25,21 @@ inference = [
 render = [
     "matplotlib>=3.8",
 ]
+# The terminal static-structural analysis (`fea-structural`): mesh, solve and
+# draw. No torch: the surrogate is only loaded when a case is screenable, and
+# that needs `inference` as well.
+solve = [
+    "gmsh>=4.12",
+    "scipy>=1.11",
+    "matplotlib>=3.8",
+]
 
 [dependency-groups]
 test = ["pytest>=8.3"]
 
 [project.scripts]
 fea-surrogate-mcp = "fea_surrogate.server:main"
+fea-structural = "fea_surrogate.cli:main"
 
 [build-system]
 requires = ["hatchling"]

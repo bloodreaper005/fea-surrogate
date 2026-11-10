@@ -273,6 +273,124 @@ def test_a_solve_records_whether_the_screening_interval_held(
     assert (out_dir / "crosschecks.jsonl").exists()
 
 
+def _structural_case(faces, **over):
+    """Held at x-min; a force on x-max and a pressure on the top face."""
+    held = [f["tag"] for f in faces if f["normal"][0] < -0.9]
+    pushed = [f["tag"] for f in faces if f["normal"][0] > 0.9]
+    top = [f["tag"] for f in faces if f["normal"][2] > 0.9]
+    document = {
+        "schema_version": "StaticStructuralCase/v1",
+        "supports": [{"type": "fixed", "faces": held}],
+        "loads": [
+            {"type": "force", "faces": pushed, "vector_n": [0.0, 0.0, -400.0]},
+            {"type": "pressure", "faces": top, "pressure_mpa": 0.05},
+        ],
+        "material": {"preset": "structural_steel"},
+        "mesh": {"element_order": 2, "refinement": "coarse"},
+    }
+    document.update(over)
+    return json.dumps(document)
+
+
+def test_a_structural_solve_returns_the_analysis_and_draws_it(
+    tmp_path, monkeypatch
+) -> None:
+    """Several loads, a real material, both fields drawn, screening kept apart."""
+    pytest.importorskip("matplotlib", reason="the images need the render extra")
+    monkeypatch.setenv("FEA_SURROGATE_OUTPUT_DIR", str(tmp_path / "out"))
+    mcp = create_mcp(surrogate=_surrogate(tmp_path))
+    path = str(_box(tmp_path))
+    faces = _call(mcp, "surrogate_inspect_cad", {"path": path})["faces"]
+
+    out = _call(
+        mcp, "structural_solve",
+        {"path": path, "case_json": _structural_case(faces)},
+    )
+
+    assert out["schema_version"] == "FeaStaticStructural/v1"
+    assert out["attestation"] == "computed_analysis"
+    stress = out["results"]["equivalent_stress"]
+    deformation = out["results"]["total_deformation"]
+    assert stress["units"] == "MPa" and stress["max"] > 0.0
+    assert deformation["units"] == "mm" and deformation["max"] > 0.0
+    assert out["results"]["equilibrium_error"] < 1e-6
+    # Two loads are outside anything the surrogate was trained on: it must
+    # say so, and its section stays nested rather than merged into the solve.
+    assert out["screening"]["status"] == "not_screenable"
+    assert out["screening"]["reasons"]
+    for name in ("equivalent_stress_image", "total_deformation_image",
+                 "setup_image", "results"):
+        assert (Path(out["output_dir"]) / out["files"][name]).exists(), name
+
+
+def test_a_structural_solve_and_the_terminal_core_agree(tmp_path, monkeypatch) -> None:
+    """One function behind both entry points, so they cannot disagree."""
+    from fea_surrogate.structural_case import parse_case
+    from fea_surrogate.structural_run import run_static_structural
+
+    pytest.importorskip("matplotlib", reason="the images need the render extra")
+    monkeypatch.setenv("FEA_SURROGATE_OUTPUT_DIR", str(tmp_path / "out"))
+    mcp = create_mcp(surrogate=_surrogate(tmp_path))
+    path = str(_box(tmp_path))
+    faces = _call(mcp, "surrogate_inspect_cad", {"path": path})["faces"]
+    case_json = _structural_case(faces)
+
+    via_mcp = _call(mcp, "structural_solve", {"path": path, "case_json": case_json})
+    direct = run_static_structural(
+        path, parse_case(json.loads(case_json)), out_dir=tmp_path / "direct",
+        render=False, export_vtu=False,
+    ).as_document()
+
+    for quantity in ("equivalent_stress", "total_deformation"):
+        assert via_mcp["results"][quantity]["max"] == pytest.approx(
+            direct["results"][quantity]["max"], rel=1e-9
+        )
+    assert via_mcp["case"] == direct["case"]
+
+
+def test_a_read_only_step_folder_does_not_fail_the_solve(tmp_path, monkeypatch) -> None:
+    """Beside the STEP as before when that folder is writable; ./fea_results
+    (as the terminal command) when it is a read-only checkout; the variable wins."""
+    import os
+
+    from fea_surrogate.server import _output_root
+
+    monkeypatch.delenv("FEA_SURROGATE_OUTPUT_DIR", raising=False)
+    shelf = tmp_path / "shelf"
+    shelf.mkdir()
+    step = shelf / "part.step"
+    step.write_text("solid")
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    assert _output_root(str(step)) == shelf.resolve()
+    shelf.chmod(0o555)
+    try:
+        if os.access(shelf, os.W_OK):
+            pytest.skip("this user can write to a read-only folder")
+        assert _output_root(str(step)) == work.resolve() / "fea_results"
+    finally:
+        shelf.chmod(0o755)
+    monkeypatch.setenv("FEA_SURROGATE_OUTPUT_DIR", str(tmp_path / "chosen"))
+    assert _output_root(str(step)) == tmp_path / "chosen"
+
+
+def test_a_structural_solve_never_assumes_a_youngs_modulus(tmp_path, monkeypatch):
+    """Deformation scales as 1/E, so a missing E is refused, not defaulted."""
+    monkeypatch.setenv("FEA_SURROGATE_OUTPUT_DIR", str(tmp_path / "out"))
+    mcp = create_mcp(surrogate=_surrogate(tmp_path))
+    path = str(_box(tmp_path))
+    faces = _call(mcp, "surrogate_inspect_cad", {"path": path})["faces"]
+    held = [f["tag"] for f in faces if f["normal"][0] < -0.9]
+    pushed = [f["tag"] for f in faces if f["normal"][0] > 0.9]
+
+    with pytest.raises(Exception, match="Young's modulus"):
+        _call(mcp, "structural_solve", {
+            "path": path,
+            "case_json": _case(held, pushed, material={"poisson_ratio": 0.3}),
+        })
+
+
 def test_inspecting_a_part_also_draws_its_faces(tmp_path, monkeypatch) -> None:
     """Asking which face is held is answerable by pointing, or it is guesswork."""
     monkeypatch.setenv("FEA_SURROGATE_OUTPUT_DIR", str(tmp_path / "out"))

@@ -9,8 +9,12 @@ Nothing measured that second path until 2026-09-21, and it was not close.
 
     python -m tools.deployed_coverage 100 6
 
-Draws fresh parts, solves each one, exports it to STEP, screens the STEP through
-the loaded server, and compares. Roughly twenty minutes for 600 parts on six
+Draws fresh parts, solves each one, exports it to STEP, screens the STEP by
+calling `predict.screen_step` directly (the same function the server's screening
+tools call, not through the MCP server itself), and compares. Run it from the
+repository root: it loads `models/sweep_gnn.pt` and `models/calibration.json`
+from there and does not read `FEA_SURROGATE_WEIGHTS` or
+`FEA_SURROGATE_CALIBRATION`. Roughly twenty minutes for 600 parts on six
 workers. It is not a unit test and does not live in `tests/`: it needs a trained
 model, a solver, and real time. It is the only thing that measures what a user
 actually gets.

@@ -18,6 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
 
@@ -28,6 +30,14 @@ HEAVY = ("torch", "torch_geometric", "gmsh", "scipy", "matplotlib")
 #: The modules a consumer may import to read or check a document.
 CONTRACT = ("fea_surrogate", "fea_surrogate.screening", "fea_surrogate.versions",
             "fea_surrogate.selectors")
+
+#: The terminal analysis's front half: the command, the case model, the
+#: screening gate and the core that orchestrates them. `fea-structural --help`,
+#: the interview and the gate all run before anything is meshed, so none of
+#: them may pull in the mesher, the solver, the renderer or the model stack at
+#: import time -- that is what lets the CI contract job exercise them.
+TERMINAL = ("fea_surrogate.cli", "fea_surrogate.structural_case",
+            "fea_surrogate.screenability", "fea_surrogate.structural_run")
 
 
 def _heavy_after_importing(modules: tuple[str, ...]) -> list[str]:
@@ -49,7 +59,12 @@ def test_the_contract_modules_import_without_the_model_stack() -> None:
 
 
 def test_the_check_would_notice_a_heavy_import() -> None:
-    """Guard the guard: a test that cannot fail is not protecting anything."""
+    """Guard the guard: a test that cannot fail is not protecting anything.
+
+    Needs gmsh to exist, so it runs in the full job and skips in the contract
+    job, whose base install deliberately has none of the heavy modules.
+    """
+    pytest.importorskip("gmsh")
     found = _heavy_after_importing(("fea_surrogate.screening", "numpy", "gmsh"))
 
     assert "gmsh" in found
@@ -63,3 +78,13 @@ def test_the_renderer_does_not_drag_in_the_model_stack() -> None:
     them.
     """
     assert _heavy_after_importing(("fea_surrogate.render",)) == []
+
+
+@pytest.mark.parametrize("module", TERMINAL)
+def test_the_terminal_front_end_imports_without_the_heavy_stack(module: str) -> None:
+    """Prompts and the screening gate must not wait on gmsh, scipy or torch.
+
+    Each module is checked on its own, so a heavy import in one of them is
+    named rather than hidden behind another that happens to import it first.
+    """
+    assert _heavy_after_importing((module,)) == []

@@ -22,6 +22,7 @@ point at one by name, the way a pre-processor lets you click it.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
@@ -210,6 +211,41 @@ def _is_planar(tag: int) -> bool:
         return False
 
 
+@contextmanager
+def keep_sigint() -> Iterator[None]:
+    """Put the Ctrl-C handler back after code that replaces it (gmsh does).
+
+    gmsh's Python API sets SIGINT to SIG_DFL in `initialize()` and never
+    restores it (`finalize()` reads a module-level handler that `initialize()`
+    stored in a local), so after one gmsh session Ctrl-C killed the process
+    outright: no "Interrupted", no exit 130. Signal handlers belong to the main
+    thread, so elsewhere this does nothing.
+    """
+    import signal
+    import threading
+
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.getsignal(signal.SIGINT)
+    try:
+        yield
+    finally:
+        if previous is not None and signal.getsignal(signal.SIGINT) is not previous:
+            signal.signal(signal.SIGINT, previous)
+
+
+def start_gmsh() -> None:
+    """`gmsh.initialize()` without gmsh taking over Ctrl-C (see `keep_sigint`)."""
+    import gmsh
+
+    with keep_sigint():
+        try:
+            gmsh.initialize(interruptible=False)
+        except TypeError:           # a gmsh without the argument
+            gmsh.initialize()
+
+
 def inspect(path: str | Path) -> Solid:
     """Import a CAD file and describe every face of its solid.
 
@@ -221,7 +257,7 @@ def inspect(path: str | Path) -> Solid:
 
     resolved = check_readable(path)
 
-    gmsh.initialize()
+    start_gmsh()
     try:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("intake")
@@ -329,6 +365,8 @@ __all__ = [
     "Solid",
     "check_readable",
     "inspect",
+    "keep_sigint",
     "nodes_of_faces",
+    "start_gmsh",
     "summarise",
 ]

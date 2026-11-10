@@ -29,9 +29,11 @@ it is refused rather than silently extrapolated.
 
 ## 2. Should `sweep/v2` get a nodal head at all?
 
-**Partly answered.** Contours exist now, from the solver rather than the model —
-3.5 s for the true field against 60 ms for a scalar estimate. So the question is
-no longer "can we draw a contour" but "do we need one at triage speed".
+**Partly answered.** Contours exist now, from the solver rather than the model.
+On the sample 11,229-node bracket a solve takes about 4 s end to end. Screening
+the same STEP takes about 1 s end to end, almost all of it meshing; the model
+call itself is about 60 ms. So the question is no longer "can we draw a contour"
+but "do we need one at triage speed".
 
 **The question that remains.** `PeakGNN` pools the whole graph into one scalar,
 so the model still cannot produce a field. `render.py` refuses rather than
@@ -55,31 +57,42 @@ CW-adaptive split-CP rather than the scalar Mondrian bands in use now.
 this is a training run against data on disk, not another sweep.
 
 **Until then.** Scalar only from the model, and the renderer refuses a
-predicted field rather than inventing one. `surrogate_solve` gives the real one
-in seconds.
+predicted field rather than inventing one. `surrogate_solve` gives the solver's
+field in seconds.
 
 ---
 
 ## 3. Should displacement be a second head?
 
-**The question.** You asked early on for deformation contours alongside von
-Mises. The solver computes displacement already; it simply is not a label.
+**Two questions that used to be one.** You asked early on for deformation
+contours alongside von Mises. On the solver side that is no longer a question.
+`generate/solver.py` always computed displacement, with E fixed at 1, so the
+real deformation is that array divided by E in MPa. The only thing missing was
+plumbing to keep it, which a solve path can add without touching the training
+labels. What remains open is a deformation head on the **surrogate**.
 
-**Why it is not mine to settle.** A displacement head doubles the output and,
-more importantly, has **no closed-form anchor in `mechanics`** — the crosscheck
-validates stress, not displacement fields. A second output nothing can check is
-a second thing to trust on faith, which is the opposite of how the rest of this
-works.
+**The question.** Should the model also predict displacement?
 
-**What would settle it.** Whether a deformation plot is something you would act
-on, or something you would look at. If the former, it needs an anchor first.
+**Why it is not mine to settle.** A displacement head doubles the output.
+More importantly, it has **no closed-form anchor in `mechanics`**: the
+crosscheck validates stress, not displacement fields. A second output nothing
+can check is a second thing to trust on faith, which is the opposite of how the
+rest of this works. Displacement also depends on E, which the stress target was
+deliberately made independent of.
 
-**Sits behind question 2.** Displacement is a second field, and there is not yet
-a first one. Answering this before the nodal-head question is answered gets the
-order wrong.
+**What would settle it.** Whether you need deformation at triage speed across
+many candidates, or only on the part you have already chosen to solve. The
+solver gives the second in seconds.
 
-**Until then.** Stress only. The displacement is computed and discarded, so
-adding it later costs a re-sweep and nothing else.
+**What it would cost.** A new sweep. The shards carry `tau`, `peak` and the
+nodal von Mises field, not displacement, so a head needs displacement labels
+generated first. It is not a training run against data on disk.
+
+**Sits behind question 2.** Displacement is a second field, and there is not
+yet a first one from the model. Answering this before the nodal-head question
+gets the order wrong.
+
+**Until then.** The model screens stress only. Deformation comes from solving.
 
 ---
 
@@ -142,20 +155,26 @@ would be much worse than reporting nothing. See
 
 ---
 
-## 7. Is bracket's 0.83 worth chasing?
+## 7. Is bracket's 0.82 worth chasing?
 
-**The question.** After the selector repair five families sit at or near 0.90.
-Bracket sits at 0.83 on n=100, where the standard error is 0.030 — about two
-standard errors low, which is suggestive rather than damning.
+**The question.** After the selector repair, five families sit at or near 0.90.
+Bracket came back at 0.83 and then 0.82 on two independent 100-part runs. The
+standard error at n=100 is 0.030, so it is more than two standard errors low
+both times. Its median pred/true of 0.86 says the band is centred slightly low,
+not that it is too narrow. See
+[DEPLOYED_COVERAGE.md](DEPLOYED_COVERAGE.md).
 
-**Why it is not mine to settle.** Chasing it means either more calibration data
-or a closer look at how bracket geometry is drawn, and neither is worth doing
-unless the band matters for a decision you are actually making.
+**Why it is not mine to settle.** The shortfall is now reproducible, so it is
+real. Fixing it means more calibration data, or a closer look at how bracket
+geometry is drawn, or a recalibration that shifts the bracket band. None of
+those is worth doing unless the bracket band matters for a decision you are
+actually making.
 
-**What would settle it.** A second independent 100-part run. If it comes back
-at 0.83 again, it is real.
+**What would settle it.** Whether bracket screening carries a decision. If it
+does, start from the median pred/true. A band centred low is a bias to correct,
+not a width to inflate.
 
-**Until then.** Reported as measured, not rounded up to nominal.
+**Until then.** Reported as measured, 0.82, and not rounded up to nominal.
 
 ---
 

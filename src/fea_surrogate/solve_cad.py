@@ -1,15 +1,18 @@
 """Solve an imported CAD part, under the same load case the screening used.
 
 Screening is triage: a fast estimate that aims an expensive check at the right
-candidate. This is that expensive check, and it turns out to be far less
-expensive than the framing suggested -- measured on an 11,229-node bracket, the
-surrogate answers in 60 ms with one scalar interval and the solver answers in
-3.5 s with the true field at every node.
+candidate. This is the check the surrogate's coverage is defined against --
+measured on an 11,229-node bracket, screening takes about 1 s end to end (the
+model call itself is about 60 ms; the rest is meshing) and this solve about 4 s.
 
-So a contour plot needs no trained nodal head. `generate/solver.py` already
-produces exactly the field a contour wants; it is what generated every training
-label. What was missing was a way to point it at an imported STEP rather than at
-a part the sweep had just built.
+It runs `generate/solver.py`, the solver every training label came from, on an
+imported STEP rather than on a part the sweep had just built. That is what makes
+it the right crosscheck for a screening interval, and also what limits it:
+4-node tetrahedra at the sweep's mesh size are stiff in bending. On the sample
+bracket's shelf this solve reads the tip deflection about 38% low and the
+bending stress about half of beam theory. For deformation, or a stress to
+compare with yield, use `structural.solve_static` (10-node tetrahedra), which is
+what the `fea-structural` command and the `structural_solve` tool run.
 
 Two things this module refuses to do differently from the screening path:
 
@@ -20,10 +23,10 @@ Two things this module refuses to do differently from the screening path:
 * the load case comes from `load_case.parse`, so the same interview answers
   drive both.
 
-What comes back is the true answer **to this idealisation** -- linear elastic,
-small displacement, P1 tetrahedra, one uniform traction, no contact and no body
-loads. That is a much stronger claim than a screening estimate and it is still
-not a strength certification.
+What comes back is the label solver's answer to this idealisation -- linear
+elastic, small displacement, P1 tetrahedra, one uniform traction, no contact and
+no body loads -- at the mesh the labels were computed on. That is a computed
+analysis, not a screening estimate, and it is not a strength certification.
 """
 
 from __future__ import annotations
@@ -93,10 +96,15 @@ class SolvedPart:
                 "no contact, no body loads, no thermal strain",
             ],
             "limitations": [
-                "the true answer to this idealisation, not a strength "
+                "the label solver's answer to this idealisation, not a strength "
                 "certification and not a manufacturing release",
-                "the element peak is mesh-dependent; the critical-distance "
-                "value is the converged one",
+                "4-node tetrahedra at the sweep's mesh size are stiff in bending: "
+                "deformation and bending stress read low (about half of beam "
+                "theory on a thin shelf); use the 10-node structural analysis "
+                "for those",
+                "the critical-distance value is a volume average that converges "
+                "where the element peak is singular, but it under-reads bending "
+                "stress and is not a design stress",
             ],
         }
 
@@ -134,8 +142,8 @@ def solve_step(
             f"this part meshes to {node_count} nodes, above the "
             f"{NODE_WARNING_THRESHOLD} at which a solve stops being "
             f"interactive -- roughly {estimate_seconds(node_count):.0f} s. "
-            "Pass allow_large to go ahead, or screen it first: screening is "
-            "60 ms and tells you whether this one is worth the wait."
+            "Pass allow_large to go ahead, or screen it first: screening takes "
+            "about a second and tells you whether this one is worth the wait."
         )
 
     try:
